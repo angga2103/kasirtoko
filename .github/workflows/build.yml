@@ -7,6 +7,9 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Android Release APK
@@ -29,15 +32,58 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Doctor check
+        run: flutter doctor -v
+
       - name: Get Dependencies
         run: flutter pub get
 
+      - name: Run Unit Tests
+        run: flutter test
+
       - name: Build Android Release APK
         run: flutter build apk --release --no-tree-shake-icons
+
+      - name: Rename APK for Easy Download
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/KasirToko-v1.0.0.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: KasirToko-Release-APK
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/*.apk
           retention-days: 14
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: v1.0.0
+          name: "KasirToko v1.0.0 - Android Release APK"
+          body: |
+            ## KasirToko Android (Full Offline-First) v1.0.0
+            
+            Unduh file `KasirToko-v1.0.0.apk` di bawah ini dan instal langsung di perangkat HP/tablet Android kasir Anda.
+            
+            ### Fitur Utama:
+            - **Point of Sale (POS):** Scan Barcode, Multi Satuan, Harga Bertingkat Grosir, Tahan Pesanan (Hold Cart).
+            - **QR Code Transaksi di Footer Struk:** Scan QR footer untuk riwayat nota & retur instan 1 detik.
+            - **Retur Produk Rapi:** Parsial / Penuh, Kondisi Baik vs Rusak/Afkir, Refund Tunai/Kasbon.
+            - **Arus Kas & Shift Kasir:** Buka Shift, Tutup Shift Blind Count, Kas Masuk/Keluar.
+            - **Buku Kasbon & Notifikasi Jatuh Tempo:** 1-klik tagihan WhatsApp & cetak Surat Invoice Penagihan PDF.
+            - **Cetak Label Barcode Thermal:** Generator 1D & 2D QR Code untuk stiker produk.
+            - **Gudang:** Surat Jalan A4 PDF, Surat Ambil Barang Gudang, Stok Opname, Pengingat Kadaluarsa Produk.
+            - **Absensi Selfie Liveness (Anti-AI):** 100% Offline Google ML Kit Face Mesh, Dynamic Token, Watermark Hash, Laporan Kedisiplinan Mingguan.
+            - **Backup Data:** Google Drive & WhatsApp Share database SQLite.
+            
+            ### Akun Bawaan (PIN Masuk):
+            - **Owner:** `123456`
+            - **Supervisor:** `3333`
+            - **Kasir:** `1111`
+            - **Gudang:** `2222`
+          files: build/app/outputs/flutter-apk/*.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
