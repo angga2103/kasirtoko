@@ -42,17 +42,48 @@ jobs:
         run: flutter test
 
       - name: Build Android Release APK
-        run: flutter build apk --release --no-tree-shake-icons --verbose
-
-      - name: Rename APK for Easy Download
+        id: build_apk
         run: |
-          cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/KasirToko-v1.0.0.apk
+          set -o pipefail
+          flutter build apk --release --no-tree-shake-icons --verbose 2>&1 | tee build_log.txt
+
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Build-Diagnostics-Log
+          path: build_log.txt
+          retention-days: 7
+
+      - name: Print Failure Summary
+        if: failure()
+        run: |
+          echo "## ❌ Build APK Failed" >> $GITHUB_STEP_SUMMARY
+          echo "### Last 150 lines of build log:" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          tail -n 150 build_log.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Prepare APK for Artifact & Release
+        run: |
+          echo "### Locating generated APK..."
+          find build -type f -name "*.apk"
+          APK_FILE=$(find build -type f -name "*release*.apk" | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            echo "::error::No release APK found!"
+            exit 1
+          fi
+          echo "Found APK: $APK_FILE"
+          mkdir -p build/app/outputs/flutter-apk
+          cp "$APK_FILE" build/app/outputs/flutter-apk/KasirToko-v1.0.0.apk
+          echo "## ✅ Build Success!" >> $GITHUB_STEP_SUMMARY
+          echo "APK successfully created: \`KasirToko-v1.0.0.apk\` ($(du -h "$APK_FILE" | cut -f1))" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: KasirToko-Release-APK
-          path: build/app/outputs/flutter-apk/*.apk
+          path: build/app/outputs/flutter-apk/KasirToko-v1.0.0.apk
           retention-days: 14
 
       - name: Publish to GitHub Release
@@ -61,28 +92,30 @@ jobs:
         with:
           tag_name: v1.0.0
           name: "KasirToko v1.0.0 - Android Release APK"
+          make_latest: true
           body: |
             ## KasirToko Android (Full Offline-First) v1.0.0
             
-            Unduh file `KasirToko-v1.0.0.apk` di bawah ini dan instal langsung di perangkat HP/tablet Android kasir Anda.
+            Unduh file `KasirToko-v1.0.0.apk` di bawah ini dan pasang langsung di tablet / HP Android kasir Anda.
             
             ### Fitur Utama:
-            - **Point of Sale (POS):** Scan Barcode, Multi Satuan, Harga Bertingkat Grosir, Tahan Pesanan (Hold Cart).
-            - **QR Code Transaksi di Footer Struk:** Scan QR footer untuk riwayat nota & retur instan 1 detik.
-            - **Retur Produk Rapi:** Parsial / Penuh, Kondisi Baik vs Rusak/Afkir, Refund Tunai/Kasbon.
-            - **Arus Kas & Shift Kasir:** Buka Shift, Tutup Shift Blind Count, Kas Masuk/Keluar.
-            - **Buku Kasbon & Notifikasi Jatuh Tempo:** 1-klik tagihan WhatsApp & cetak Surat Invoice Penagihan PDF.
-            - **Cetak Label Barcode Thermal:** Generator 1D & 2D QR Code untuk stiker produk.
-            - **Gudang:** Surat Jalan A4 PDF, Surat Ambil Barang Gudang, Stok Opname, Pengingat Kadaluarsa Produk.
-            - **Absensi Selfie Liveness (Anti-AI):** 100% Offline Google ML Kit Face Mesh, Dynamic Token, Watermark Hash, Laporan Kedisiplinan Mingguan.
-            - **Backup Data:** Google Drive & WhatsApp Share database SQLite.
+            - **Multi-Level Karyawan:** Owner, Supervisor, Kasir, Gudang.
+            - **Point of Sale (POS):** Multi-satuan, harga bertingkat grosir, barang fisik vs jasa, pending/hold cart, bayar tunai/transfer/kasbon.
+            - **QR Code Transaksi di Footer Struk:** Struk thermal 58mm/80mm dilengkapi QR invoice di footer untuk pencarian riwayat nota & retur instan 1 detik.
+            - **Retur Produk Sebagian / Semua:** Pemisahan stok baik (masuk rak kasir) vs rusak (masuk gudang rusak/afkir), refund tunai/potong kasbon.
+            - **Manajemen Arus Kas & Shift Kasir:** Buka shift, modal awal, kas masuk operasional, kas keluar biaya, tutup shift blind count & hitung selisih kas.
+            - **Buku Kasbon & Notifikasi Jatuh Tempo:** Pelacakan kasbon pelanggan, 1-klik tagihan WhatsApp, dan cetak Surat Invoice Penagihan PDF A4.
+            - **Cetak Label Barcode & QR Code:** Generator cetak thermal label stiker 1D barcode Code128 dan 2D QR Code custom ukuran.
+            - **Gudang & Logistik:** Surat Jalan (Delivery Order) A4 PDF, Surat Ambil Barang Gudang, Stok Opname fisik vs sistem, Pengingat Kadaluarsa Produk (H-30, H-7, Expired).
+            - **Absensi Selfie Liveness Offline (Anti-AI):** 100% Offline Google ML Kit Face Mesh, Dynamic Token Challenge, Hardcoded Watermark (#AUTH-hash), Rekap Kedisiplinan Mingguan.
+            - **Backup & Keamanan Data:** Ekspor/Impor database SQLite offline, kirim backup ke Google Drive & WhatsApp, log audit aksi karyawan.
             
-            ### Akun Bawaan (PIN Masuk):
+            ### PIN Default Masuk:
             - **Owner:** `123456`
             - **Supervisor:** `3333`
             - **Kasir:** `1111`
             - **Gudang:** `2222`
-          files: build/app/outputs/flutter-apk/*.apk
+          files: build/app/outputs/flutter-apk/KasirToko-v1.0.0.apk
           draft: false
           prerelease: false
         env:
