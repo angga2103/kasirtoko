@@ -10,6 +10,7 @@ class AppTheme {
   static const Color accentOrange = Color(0xFFF97316);
   static const Color accentRed = Color(0xFFEF4444);
   static const Color accentBlue = Color(0xFF3B82F6);
+  static const Color success = Color(0xFF10B981);
   static const Color lightGreyBg = Color(0xFFF8FAFC);
 
   static ThemeData get lightTheme {
@@ -35,7 +36,7 @@ class AppTheme {
           fontWeight: FontWeight.bold,
         ),
       ),
-      cardTheme: CardTheme(
+      cardTheme: CardThemeData(
         color: cardBg,
         elevation: 1.5,
         shadowColor: Colors.black.withOpacity(0.08),

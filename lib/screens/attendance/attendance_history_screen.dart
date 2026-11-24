@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/attendance_provider.dart';
 import '../../providers/settings_provider.dart';
-import '../../models/attendance.dart';
 import '../../services/whatsapp_service.dart';
 import '../../utils/app_theme.dart';
 import '../../utils/date_format.dart';

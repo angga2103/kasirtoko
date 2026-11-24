@@ -72,7 +72,7 @@ class _HomeScreenState extends State<HomeScreen> {
             margin: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
             decoration: BoxDecoration(
-              color: cashFlow.isShiftOpen ? Colors.emeraldGreenAccent() : AppTheme.accentOrange,
+              color: cashFlow.isShiftOpen ? AppTheme.success : AppTheme.accentOrange,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Row(

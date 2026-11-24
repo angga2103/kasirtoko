@@ -5,8 +5,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../models/product.dart';
 import '../models/transaction.dart';
-import '../models/stock_opname.dart';
-import '../utils/currency_format.dart';
 import '../utils/date_format.dart';
 
 class ExcelImportResult {
@@ -24,16 +22,16 @@ class ExcelImportResult {
 class ExcelService {
   // Parse imported Excel file into List<ProductModel>
   static Future<List<ProductModel>> pickAndParseProductsExcel() async {
-    final result = await FilePicker.platform.pickFiles(
+    final pickedFile = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: ['xlsx', 'xls'],
     );
 
-    if (result == null || result.files.single.path == null) {
+    if (pickedFile == null || pickedFile.path == null) {
       return [];
     }
 
-    final file = File(result.files.single.path!);
+    final file = File(pickedFile.path!);
     final bytes = await file.readAsBytes();
     final excel = Excel.decodeBytes(bytes);
 

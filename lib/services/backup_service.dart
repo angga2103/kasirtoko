@@ -58,16 +58,16 @@ class BackupService {
   // 2. Restore database from selected file
   static Future<BackupResult> restoreDatabase() async {
     try {
-      final result = await FilePicker.platform.pickFiles(
+      final pickedFile = await FilePicker.pickFile(
         type: FileType.any,
       );
 
-      if (result == null || result.files.single.path == null) {
+      if (pickedFile == null || pickedFile.path == null) {
         return BackupResult(success: false, message: 'Pemulihan dibatalkan.');
       }
 
-      final pickedFile = File(result.files.single.path!);
-      if (!pickedFile.path.endsWith('.db')) {
+      final dbFile = File(pickedFile.path!);
+      if (!dbFile.path.endsWith('.db')) {
         return BackupResult(
           success: false,
           message: 'Format file tidak sesuai! Harus berformat .db',
@@ -82,7 +82,7 @@ class BackupService {
       await db.close();
 
       // Overwrite database file
-      await pickedFile.copy(dbPath);
+      await dbFile.copy(dbPath);
 
       return BackupResult(
         success: true,
