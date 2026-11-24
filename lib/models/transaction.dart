@@ -1,0 +1,84 @@
+import 'transaction_item.dart';
+
+class TransactionModel {
+  final int? id;
+  final String invoiceNumber;
+  final DateTime date;
+  final int cashierId;
+  final String cashierName;
+  final String customerName;
+  final String customerPhone;
+  final double subtotal;
+  final double discountTotal;
+  final double grandTotal;
+  final String paymentMethod; // 'tunai', 'transfer', 'kasbon', 'split'
+  final double amountPaid;
+  final double changeAmount;
+  final String status; // 'completed', 'voided', 'returned', 'partial_return'
+  final String qrCodePayload;
+  final String note;
+  List<TransactionItemModel> items;
+
+  TransactionModel({
+    this.id,
+    required this.invoiceNumber,
+    required this.date,
+    required this.cashierId,
+    required this.cashierName,
+    this.customerName = 'Pelanggan Umum',
+    this.customerPhone = '',
+    required this.subtotal,
+    this.discountTotal = 0.0,
+    required this.grandTotal,
+    this.paymentMethod = 'tunai',
+    required this.amountPaid,
+    this.changeAmount = 0.0,
+    this.status = 'completed',
+    String? qrCodePayload,
+    this.note = '',
+    List<TransactionItemModel>? items,
+  })  : qrCodePayload = qrCodePayload ?? 'TRX|$invoiceNumber|${grandTotal.toInt()}',
+        items = items ?? [];
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'invoice_number': invoiceNumber,
+      'date': date.toIso8601String(),
+      'cashier_id': cashierId,
+      'cashier_name': cashierName,
+      'customer_name': customerName,
+      'customer_phone': customerPhone,
+      'subtotal': subtotal,
+      'discount_total': discountTotal,
+      'grand_total': grandTotal,
+      'payment_method': paymentMethod,
+      'amount_paid': amountPaid,
+      'change_amount': changeAmount,
+      'status': status,
+      'qr_code_payload': qrCodePayload,
+      'note': note,
+    };
+  }
+
+  factory TransactionModel.fromMap(Map<String, dynamic> map) {
+    return TransactionModel(
+      id: map['id'],
+      invoiceNumber: map['invoice_number'],
+      date: DateTime.parse(map['date']),
+      cashierId: map['cashier_id'],
+      cashierName: map['cashier_name'] ?? 'Kasir',
+      customerName: map['customer_name'] ?? 'Pelanggan Umum',
+      customerPhone: map['customer_phone'] ?? '',
+      subtotal: (map['subtotal'] as num).toDouble(),
+      discountTotal: (map['discount_total'] as num?)?.toDouble() ?? 0.0,
+      grandTotal: (map['grand_total'] as num).toDouble(),
+      paymentMethod: map['payment_method'] ?? 'tunai',
+      amountPaid: (map['amount_paid'] as num).toDouble(),
+      changeAmount: (map['change_amount'] as num?)?.toDouble() ?? 0.0,
+      status: map['status'] ?? 'completed',
+      qrCodePayload: map['qr_code_payload'] ?? '',
+      note: map['note'] ?? '',
+    );
+  }
+}
