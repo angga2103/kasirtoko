@@ -26,6 +26,9 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
+      - name: Accept Android SDK Licenses
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -55,14 +58,19 @@ jobs:
           path: build_log.txt
           retention-days: 7
 
-      - name: Print Failure Summary
+      - name: Push Diagnostics Branch on Failure
         if: failure()
         run: |
-          echo "## ❌ Build APK Failed" >> $GITHUB_STEP_SUMMARY
-          echo "### Last 150 lines of build log:" >> $GITHUB_STEP_SUMMARY
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          tail -n 150 build_log.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan diagnostics
+          git rm -rf . || true
+          if [ -f build_log.txt ]; then
+            tail -n 400 build_log.txt > build_error.log
+            git add build_error.log
+            git commit -m "ci: capture build error log"
+            git push -f origin diagnostics
+          fi
 
       - name: Prepare APK for Artifact & Release
         run: |
