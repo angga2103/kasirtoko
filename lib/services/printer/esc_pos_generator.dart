@@ -5,6 +5,23 @@ import '../../models/service_order.dart';
 import '../../models/transaction.dart';
 import '../../utils/currency_format.dart';
 import '../../utils/date_format.dart';
+import 'esc_pos_image_helper.dart';
+
+class ProductLabelItem {
+  final String name;
+  final String sku;
+  final String barcodeData;
+  final double price;
+  final int copyCount;
+
+  const ProductLabelItem({
+    required this.name,
+    required this.sku,
+    required this.barcodeData,
+    required this.price,
+    this.copyCount = 1,
+  });
+}
 
 class EscPosGenerator {
   static final List<int> _cmdInit = [0x1B, 0x40];
@@ -74,6 +91,7 @@ class EscPosGenerator {
     required String storePhone,
     required ReceiptConfigModel config,
     required int charWidth,
+    String? logoPath,
     bool autoCut = true,
     bool openDrawer = false,
   }) {
@@ -82,9 +100,26 @@ class EscPosGenerator {
 
     // Alignment
     out.addAll(config.headerAlignment == 'left' ? _cmdAlignLeft : _cmdAlignCenter);
-    out.addAll(_cmdBoldOn);
-    _addLine(out, storeName.toUpperCase());
-    out.addAll(_cmdBoldOff);
+
+    bool logoPrinted = false;
+    if (config.showLogo && logoPath != null && logoPath.isNotEmpty) {
+      final rasterLogo = EscPosImageHelper.encodeEscPosRasterLogo(
+        logoPath,
+        maxWidthDots: charWidth >= 42 ? 320 : 220,
+      );
+      if (rasterLogo.isNotEmpty) {
+        out.addAll(rasterLogo);
+        out.add(0x0A);
+        logoPrinted = true;
+      }
+    }
+
+    final shouldPrintStoreName = !(config.showLogo && config.hideStoreNameWithLogo && logoPrinted);
+    if (shouldPrintStoreName) {
+      out.addAll(_cmdBoldOn);
+      _addLine(out, storeName.toUpperCase());
+      out.addAll(_cmdBoldOff);
+    }
     if (config.showAddress && storeAddress.isNotEmpty) {
       _addLine(out, storeAddress);
     }
@@ -237,6 +272,77 @@ class EscPosGenerator {
     _addLine(out, 'Simpan nota ini saat pengambilan.');
     out.addAll([0x0A, 0x0A, 0x0A]);
     if (autoCut) out.addAll(_cmdCut);
+    return Uint8List.fromList(out);
+  }
+
+  /// Generates ESC/POS thermal label stickers (supports both 1D Code128 and 2D QR Code)
+  /// across multiple products and custom copy counts.
+  static Uint8List buildProductLabels({
+    required List<ProductLabelItem> items,
+    required String storeName,
+    required int charWidth,
+    bool isQrCode = false,
+    bool showStoreName = true,
+    bool showPrice = true,
+    bool showSku = true,
+    bool autoCut = true,
+  }) {
+    final out = <int>[];
+    out.addAll(_cmdInit);
+
+    for (final item in items) {
+      final cleanData = _sanitizeAscii(item.barcodeData).trim();
+      final payload = cleanData.isEmpty ? '000000' : cleanData;
+      final copies = item.copyCount.clamp(1, 200);
+
+      for (int c = 0; c < copies; c++) {
+        out.addAll(_cmdAlignCenter);
+        if (showStoreName && storeName.isNotEmpty) {
+          _addLine(out, storeName.toUpperCase());
+        }
+        out.addAll(_cmdBoldOn);
+        _addLine(out, item.name.length > charWidth ? item.name.substring(0, charWidth) : item.name);
+        out.addAll(_cmdBoldOff);
+        if (showSku && item.sku.isNotEmpty) {
+          _addLine(out, 'SKU: ${item.sku}');
+        }
+
+        if (isQrCode) {
+          final qrData = latin1.encode(payload);
+          final storeLen = qrData.length + 3;
+          out.addAll([0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00]);
+          out.addAll([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, 0x05]);
+          out.addAll([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x30]);
+          out.addAll([0x1D, 0x28, 0x6B, storeLen % 256, storeLen ~/ 256, 0x31, 0x50, 0x30]);
+          out.addAll(qrData);
+          out.addAll([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30]);
+          out.add(0x0A);
+          _addLine(out, payload);
+        } else {
+          // ESC/POS native Code128 (m = 73) with Code B subset {B (0x7B, 0x42)
+          final codeBytes = latin1.encode(payload);
+          final dataWithSubset = <int>[0x7B, 0x42, ...codeBytes];
+          out.addAll([0x1D, 0x48, 0x02]); // HRI below barcode
+          out.addAll([0x1D, 0x68, 0x48]); // Height = 72 dots
+          out.addAll([0x1D, 0x77, charWidth >= 42 ? 0x03 : 0x02]); // Module width
+          out.addAll([0x1D, 0x6B, 0x49, dataWithSubset.length]);
+          out.addAll(dataWithSubset);
+          out.add(0x0A);
+        }
+
+        if (showPrice) {
+          out.addAll(_cmdBoldOn);
+          _addLine(out, CurrencyHelper.format(item.price));
+          out.addAll(_cmdBoldOff);
+        }
+
+        _addLine(out, '-' * charWidth);
+        out.addAll([0x0A, 0x0A]);
+        if (autoCut) {
+          out.addAll(_cmdCut);
+        }
+      }
+    }
     return Uint8List.fromList(out);
   }
 }

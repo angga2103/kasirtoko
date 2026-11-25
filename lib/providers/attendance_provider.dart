@@ -40,6 +40,40 @@ class AttendanceProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<String?> validateAttendanceAttempt({
+    required int employeeId,
+    required String type,
+    DateTime? timestamp,
+  }) async {
+    final now = timestamp ?? DateTime.now();
+    final maxSys = await DatabaseHelper.instance.getMaxSystemActivityTimestamp();
+    if (maxSys != null && now.isBefore(maxSys.subtract(const Duration(minutes: 2)))) {
+      return 'Waktu perangkat mundur dari aktivitas terakhir di sistem. Sinkronkan jam perangkat terlebih dahulu.';
+    }
+    final todayLogs = await DatabaseHelper.instance.getAttendancesTodayForEmployee(employeeId, now);
+    final hasIn = todayLogs.any((a) => a.type == 'masuk');
+    final hasOut = todayLogs.any((a) => a.type == 'pulang');
+
+    if (type == 'masuk' && hasIn) {
+      final firstIn = todayLogs.firstWhere((a) => a.type == 'masuk');
+      final hhmm =
+          '${firstIn.timestamp.hour.toString().padLeft(2, '0')}:${firstIn.timestamp.minute.toString().padLeft(2, '0')}';
+      return 'Anda sudah absen MASUK hari ini pukul $hhmm. Tidak diperbolehkan absen masuk dua kali.';
+    }
+    if (type == 'pulang') {
+      if (!hasIn) {
+        return 'Anda belum melakukan absensi MASUK hari ini. Lakukan absen masuk terlebih dahulu.';
+      }
+      if (hasOut) {
+        final firstOut = todayLogs.firstWhere((a) => a.type == 'pulang');
+        final hhmm =
+            '${firstOut.timestamp.hour.toString().padLeft(2, '0')}:${firstOut.timestamp.minute.toString().padLeft(2, '0')}';
+        return 'Anda sudah absen PULANG hari ini pukul $hhmm.';
+      }
+    }
+    return null;
+  }
+
   Future<void> recordAttendance(AttendanceModel attendance) async {
     await DatabaseHelper.instance.insertAttendance(attendance);
     await loadAttendances();

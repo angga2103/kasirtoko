@@ -9,6 +9,7 @@ class ProductModel {
   final String category;
   final String barcode;
   final bool isService;
+  final bool trackStock;
   final String baseUnit;
   final double costPrice;
   final double sellingPrice;
@@ -35,6 +36,7 @@ class ProductModel {
     this.category = 'Umum',
     this.barcode = '',
     this.isService = false,
+    bool? trackStock,
     this.baseUnit = 'Pcs',
     this.costPrice = 0.0,
     required this.sellingPrice,
@@ -51,11 +53,13 @@ class ProductModel {
     List<ProductUnitModel>? units,
     List<TieredPriceModel>? tieredPrices,
     List<ProductBatchModel>? batches,
-  })  : units = units ?? [],
+  })  : trackStock = trackStock ?? !isService,
+        units = units ?? [],
         tieredPrices = tieredPrices ?? [],
         batches = batches ?? [];
 
-  bool get isLowStock => !isService && stock <= minStockAlert;
+  bool get managesStock => !isService && trackStock;
+  bool get isLowStock => managesStock && stock <= minStockAlert;
 
   double getPriceForQty(double qty) {
     if (tieredPrices.isEmpty) return sellingPrice;
@@ -79,6 +83,7 @@ class ProductModel {
       'category': category,
       'barcode': barcode,
       'is_service': isService ? 1 : 0,
+      'track_stock': trackStock ? 1 : 0,
       'base_unit': baseUnit,
       'cost_price': costPrice,
       'selling_price': sellingPrice,
@@ -103,6 +108,7 @@ class ProductModel {
       category: map['category'] ?? 'Umum',
       barcode: map['barcode'] ?? '',
       isService: (map['is_service'] ?? 0) == 1,
+      trackStock: map.containsKey('track_stock') ? (map['track_stock'] ?? 1) == 1 : (map['is_service'] ?? 0) != 1,
       baseUnit: map['base_unit'] ?? 'Pcs',
       costPrice: (map['cost_price'] as num?)?.toDouble() ?? 0.0,
       sellingPrice: (map['selling_price'] as num?)?.toDouble() ?? 0.0,
@@ -126,6 +132,7 @@ class ProductModel {
     String? category,
     String? barcode,
     bool? isService,
+    bool? trackStock,
     String? baseUnit,
     double? costPrice,
     double? sellingPrice,
@@ -150,6 +157,7 @@ class ProductModel {
       category: category ?? this.category,
       barcode: barcode ?? this.barcode,
       isService: isService ?? this.isService,
+      trackStock: trackStock ?? this.trackStock,
       baseUnit: baseUnit ?? this.baseUnit,
       costPrice: costPrice ?? this.costPrice,
       sellingPrice: sellingPrice ?? this.sellingPrice,

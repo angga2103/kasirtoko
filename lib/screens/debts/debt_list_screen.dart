@@ -39,66 +39,163 @@ class _DebtListScreenState extends State<DebtListScreen> with SingleTickerProvid
 
   void _showPaymentDialog(CustomerDebtModel debt) {
     final payCtrl = TextEditingController(text: debt.remainingDebt.toInt().toString());
+    final noteCtrl = TextEditingController();
     final cashFlow = Provider.of<CashFlowProvider>(context, listen: false);
     final auth = Provider.of<AuthProvider>(context, listen: false);
+    String method = 'tunai';
+    String? errMsg;
+    bool saving = false;
 
     showDialog(
       context: context,
       builder: (ctx) {
-        return AlertDialog(
-          title: Text('Pelunasan Kasbon: ${debt.customerName}'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('No. Nota: ${debt.invoiceNumber}'),
-              Text('Total Tagihan: ${CurrencyHelper.format(debt.totalDebt)}'),
-              Text('Sisa Belum Bayar: ${CurrencyHelper.format(debt.remainingDebt)}',
-                  style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.accentRed)),
-              const SizedBox(height: 12),
-              TextField(
-                controller: payCtrl,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'Nominal Pembayaran Diterima',
-                  prefixText: 'Rp ',
-                ),
+        return StatefulBuilder(
+          builder: (context, setDState) => AlertDialog(
+            title: Text('Pelunasan Kasbon: ${debt.customerName}'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('No. Nota: ${debt.invoiceNumber}'),
+                  Text('Total Tagihan: ${CurrencyHelper.format(debt.totalDebt)}'),
+                  Text(
+                    'Sisa Belum Bayar: ${CurrencyHelper.format(debt.remainingDebt)}',
+                    style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.accentRed),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: method,
+                    decoration: const InputDecoration(labelText: 'Metode Pembayaran'),
+                    items: const [
+                      DropdownMenuItem(value: 'tunai', child: Text('Tunai (Masuk Kas Laci)')),
+                      DropdownMenuItem(value: 'transfer', child: Text('Transfer Bank')),
+                      DropdownMenuItem(value: 'qris', child: Text('QRIS')),
+                    ],
+                    onChanged: (v) => setDState(() => method = v ?? 'tunai'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: payCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Nominal Pembayaran Diterima',
+                      prefixText: 'Rp ',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: noteCtrl,
+                    decoration: const InputDecoration(labelText: 'Catatan Pembayaran (Opsional)'),
+                  ),
+                  if (errMsg != null) ...[
+                    const SizedBox(height: 8),
+                    Text(errMsg!, style: const TextStyle(color: AppTheme.accentRed, fontSize: 12)),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: saving ? null : () => Navigator.pop(ctx), child: const Text('Batal')),
+              ElevatedButton(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        final amount = double.tryParse(payCtrl.text.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0.0;
+                        if (amount <= 0) {
+                          setDState(() => errMsg = 'Nominal pembayaran harus lebih dari Rp 0.');
+                          return;
+                        }
+                        if (method == 'tunai' && !cashFlow.isShiftOpen) {
+                          setDState(() => errMsg = 'Shift kasir belum dibuka untuk menerima setoran tunai.');
+                          return;
+                        }
+                        setDState(() {
+                          saving = true;
+                          errMsg = null;
+                        });
+                        try {
+                          await Provider.of<DebtProvider>(context, listen: false).payDebt(
+                            debt.id!,
+                            amount,
+                            paymentMethod: method,
+                            shiftId: cashFlow.currentShift?.id,
+                            cashierName: auth.currentUser?.name ?? 'Kasir',
+                            note: noteCtrl.text.trim(),
+                          );
+                          await cashFlow.checkOpenShift();
+                          await auth.logAction(
+                            'bayar_kasbon',
+                            'Pembayaran kasbon nota ${debt.invoiceNumber} (${debt.customerName}): ${CurrencyHelper.format(amount)} ($method)',
+                            module: 'kasbon',
+                            objectId: debt.invoiceNumber,
+                          );
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          if (mounted) {
+                            ScaffoldMessenger.of(this.context).showSnackBar(
+                              SnackBar(
+                                content: Text('Pembayaran ${CurrencyHelper.format(amount)} berhasil dicatat.'),
+                                backgroundColor: AppTheme.success,
+                              ),
+                            );
+                          }
+                        } catch (e) {
+                          setDState(() {
+                            saving = false;
+                            errMsg = e.toString().replaceFirst('Bad state: ', '').replaceFirst('ArgumentError: ', '');
+                          });
+                        }
+                      },
+                child: Text(saving ? 'Menyimpan...' : 'Simpan Pembayaran'),
               ),
             ],
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Batal')),
-            ElevatedButton(
-              onPressed: () async {
-                final amount = double.tryParse(payCtrl.text.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0.0;
-                if (amount > 0) {
-                  await Provider.of<DebtProvider>(context, listen: false).payDebt(
-                    debt.id!,
-                    amount,
-                    shiftId: cashFlow.currentShift?.id,
-                    cashierName: auth.currentUser?.name ?? 'Kasir',
-                  );
-                  await cashFlow.checkOpenShift();
-                  await auth.logAction(
-                    'bayar_kasbon',
-                    'Pembayaran kasbon nota ${debt.invoiceNumber} (${debt.customerName}): ${CurrencyHelper.format(amount)}',
-                  );
-                  if (ctx.mounted) Navigator.pop(ctx);
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Pembayaran ${CurrencyHelper.format(amount)} berhasil dicatat.')),
-                    );
-                  }
-                }
-              },
-              child: const Text('Simpan Pembayaran'),
-            ),
-          ],
         );
       },
     ).whenComplete(() {
-      Future.delayed(const Duration(milliseconds: 300), payCtrl.dispose);
+      Future.delayed(const Duration(milliseconds: 300), () {
+        payCtrl.dispose();
+        noteCtrl.dispose();
+      });
     });
+  }
+
+  Future<void> _showDebtPaymentHistory(CustomerDebtModel debt) async {
+    final payments = await Provider.of<DebtProvider>(context, listen: false).getDebtPayments(debt.id!);
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Riwayat Cicilan • ${debt.invoiceNumber}', style: const TextStyle(fontSize: 16)),
+        content: SizedBox(
+          width: 400,
+          child: payments.isEmpty
+              ? const Text('Belum ada pembayaran atau pemotongan saldo pada kasbon ini.')
+              : ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: payments.length,
+                  separatorBuilder: (_, __) => const Divider(height: 10),
+                  itemBuilder: (_, i) {
+                    final pay = payments[i];
+                    return ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        CurrencyHelper.format(pay.amount),
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.primaryGreen),
+                      ),
+                      subtitle: Text(
+                        '${DateHelper.formatFull(pay.date)} • ${pay.paymentMethod.toUpperCase()} • ${pay.cashierName}'
+                        '${pay.note.isNotEmpty ? "\n${pay.note}" : ""}',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        actions: [ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('Tutup'))],
+      ),
+    );
   }
 
   @override
@@ -213,8 +310,16 @@ class _DebtListScreenState extends State<DebtListScreen> with SingleTickerProvid
                         ),
                       ],
                     ),
-                    Row(
+                    Wrap(
+                      spacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
+                        // History Cicilan
+                        IconButton(
+                          icon: const Icon(Icons.history_rounded, color: AppTheme.textSecondary),
+                          tooltip: 'Riwayat Cicilan Kasbon',
+                          onPressed: () => _showDebtPaymentHistory(d),
+                        ),
                         // WhatsApp Reminder
                         IconButton(
                           icon: const Icon(Icons.share_rounded, color: Colors.green),

@@ -11,6 +11,7 @@ import '../models/transaction_item.dart';
 
 class HeldOrder {
   final String id;
+  final int? customerId;
   final String customerName;
   final String customerPhone;
   final DateTime timestamp;
@@ -19,6 +20,7 @@ class HeldOrder {
 
   HeldOrder({
     required this.id,
+    this.customerId,
     required this.customerName,
     this.customerPhone = '',
     required this.timestamp,
@@ -42,6 +44,7 @@ class PosProvider extends ChangeNotifier {
   bool _applyTax = false;
   double _taxRate = 0.0;
 
+  int? _customerId;
   String _customerName = 'Pelanggan Umum';
   String _customerPhone = '';
   String _selectedPaymentMethod = 'tunai';
@@ -56,6 +59,7 @@ class PosProvider extends ChangeNotifier {
   bool get applyTax => _applyTax;
   double get taxRate => _taxRate;
 
+  int? get customerId => _customerId;
   String get customerName => _customerName;
   String get customerPhone => _customerPhone;
   String get selectedPaymentMethod => _selectedPaymentMethod;
@@ -145,8 +149,10 @@ class PosProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void setCustomerInfo(String name, String phone) {
-    _customerName = name.trim().isEmpty ? 'Pelanggan Umum' : name.trim();
+  void setCustomerInfo(String name, String phone, {int? customerId}) {
+    final cleanName = name.trim();
+    _customerId = (cleanName.isEmpty || cleanName.toLowerCase() == 'pelanggan umum') ? null : customerId;
+    _customerName = cleanName.isEmpty ? 'Pelanggan Umum' : cleanName;
     _customerPhone = phone.trim();
     notifyListeners();
   }
@@ -171,12 +177,21 @@ class PosProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  double getBaseCartQtyForProduct(int productId, String baseUnit) {
+    for (final i in _cartItems) {
+      if (i.productId == productId && i.unitName == baseUnit) {
+        return i.qty;
+      }
+    }
+    return 0.0;
+  }
+
   CartMutationResult addProduct(ProductModel product, {ProductUnitModel? selectedUnit}) {
     final unitName = selectedUnit != null ? selectedUnit.unitName : product.baseUnit;
     final conversion = selectedUnit != null ? selectedUnit.conversionFactor : 1.0;
 
     // Validate physical stock before mutating cart
-    if (!product.isService) {
+    if (product.managesStock) {
       final usedBaseQty = getCartQtyForProduct(product.id ?? -1);
       if (usedBaseQty + conversion > product.stock + 0.0001) {
         return CartMutationResult(
@@ -244,6 +259,56 @@ class PosProvider extends ChangeNotifier {
     return CartMutationResult(success: true);
   }
 
+  CartMutationResult setExactBaseQtyForProduct(ProductModel product, double newQty) {
+    if (newQty < 0) {
+      return CartMutationResult(success: false, message: 'Jumlah tidak boleh negatif.');
+    }
+    final existingIdx = _cartItems.indexWhere(
+      (i) => i.productId == product.id && i.unitName == product.baseUnit,
+    );
+    if (newQty <= 0) {
+      if (existingIdx != -1) {
+        removeItem(existingIdx);
+      }
+      return CartMutationResult(success: true);
+    }
+
+    if (existingIdx == -1) {
+      if (product.managesStock) {
+        final otherUnits = getCartQtyForProduct(product.id ?? -1);
+        if (otherUnits + newQty > product.stock + 0.0001) {
+          final maxAvail = (product.stock - otherUnits).clamp(0.0, double.infinity);
+          return CartMutationResult(
+            success: false,
+            message:
+                'Stok "${product.name}" hanya tersisa ${maxAvail.toStringAsFixed(maxAvail.truncateToDouble() == maxAvail ? 0 : 1)} ${product.baseUnit}.',
+          );
+        }
+      }
+      final unitPrice = product.tieredPrices.isNotEmpty
+          ? product.getPriceForQty(newQty)
+          : product.sellingPrice;
+      _cartItems.add(
+        TransactionItemModel(
+          productId: product.id!,
+          productCode: product.code,
+          productName: product.name,
+          unitName: product.baseUnit,
+          conversionFactor: 1.0,
+          qty: newQty,
+          unitPrice: unitPrice,
+          discount: 0.0,
+          subtotal: newQty * unitPrice,
+          costPrice: product.costPrice,
+          isService: product.isService,
+        ),
+      );
+      notifyListeners();
+      return CartMutationResult(success: true);
+    }
+    return updateItemQty(existingIdx, newQty, product);
+  }
+
   CartMutationResult updateItemQty(int index, double newQty, ProductModel product) {
     if (index < 0 || index >= _cartItems.length) {
       return CartMutationResult(success: false, message: 'Item tidak ditemukan.');
@@ -255,7 +320,7 @@ class PosProvider extends ChangeNotifier {
 
     final item = _cartItems[index];
 
-    if (!product.isService) {
+    if (product.managesStock) {
       double otherUnitsBaseQty = 0.0;
       for (int i = 0; i < _cartItems.length; i++) {
         if (i != index && _cartItems[i].productId == item.productId) {
@@ -337,6 +402,7 @@ class PosProvider extends ChangeNotifier {
     _manualCartDiscount = 0.0;
     _selectedPromo = null;
     _amountPaid = 0.0;
+    _customerId = null;
     _customerName = 'Pelanggan Umum';
     _customerPhone = '';
     _selectedPaymentMethod = 'tunai';
@@ -350,6 +416,7 @@ class PosProvider extends ChangeNotifier {
     _heldOrders.add(
       HeldOrder(
         id: holdId,
+        customerId: _customerId,
         customerName: _customerName,
         customerPhone: _customerPhone,
         timestamp: DateTime.now(),
@@ -364,6 +431,7 @@ class PosProvider extends ChangeNotifier {
   void resumeHeldOrder(HeldOrder order) {
     _cartItems = List.from(order.items);
     _manualCartDiscount = order.discountTotal;
+    _customerId = order.customerId;
     _customerName = order.customerName;
     _customerPhone = order.customerPhone;
     _heldOrders.removeWhere((h) => h.id == order.id);
@@ -424,6 +492,8 @@ class PosProvider extends ChangeNotifier {
         date: now,
         cashierId: cashierId,
         cashierName: cashierName,
+        customerId: _customerId,
+        shiftId: activeShiftId,
         customerName: _customerName,
         customerPhone: _customerPhone,
         subtotal: subtotal,
@@ -452,6 +522,8 @@ class PosProvider extends ChangeNotifier {
         date: transaction.date,
         cashierId: transaction.cashierId,
         cashierName: transaction.cashierName,
+        customerId: transaction.customerId,
+        shiftId: transaction.shiftId,
         customerName: transaction.customerName,
         customerPhone: transaction.customerPhone,
         subtotal: transaction.subtotal,

@@ -229,6 +229,7 @@ class UserModel {
 
   bool get isOwner => role == AppRoles.owner;
   bool get isAdmin => role == AppRoles.admin || isOwner;
+  bool get isOwnerOrAdmin => isOwner || isAdmin;
   bool get isSupervisor => role == AppRoles.supervisor || isAdmin;
   bool get isCashier => role == AppRoles.cashier;
   bool get isWarehouse => role == AppRoles.warehouse;

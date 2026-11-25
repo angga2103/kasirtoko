@@ -186,7 +186,124 @@ class AuthProvider extends ChangeNotifier {
     return null;
   }
 
-  Future<void> logAction(String actionType, String details) async {
+  /// Self-service password / PIN update requiring current secret verification.
+  Future<String?> changeOwnCredentials({
+    required String currentSecret,
+    String? newPassword,
+    String? newPin,
+  }) async {
+    final me = _currentUser;
+    if (me == null || me.id == null) return 'Sesi login tidak ditemukan.';
+
+    final validPw = me.passwordHash.isNotEmpty &&
+        me.passwordSalt.isNotEmpty &&
+        SecurityHelper.verifySecret(currentSecret, me.passwordSalt, me.passwordHash);
+    final validPin = me.pinHash.isNotEmpty &&
+        me.passwordSalt.isNotEmpty &&
+        SecurityHelper.verifySecret(currentSecret, me.passwordSalt, me.pinHash);
+    if (!validPw && !validPin) {
+      return 'Password atau PIN saat ini tidak cocok.';
+    }
+
+    final cleanPw = newPassword?.trim() ?? '';
+    final cleanPin = newPin?.trim() ?? '';
+    if (cleanPw.isEmpty && cleanPin.isEmpty) {
+      return 'Masukkan password baru atau PIN baru.';
+    }
+    if (cleanPw.isNotEmpty && cleanPw.length < 4) {
+      return 'Password baru minimal 4 karakter.';
+    }
+    if (cleanPin.isNotEmpty && (cleanPin.length < 4 || cleanPin.length > 6)) {
+      return 'PIN baru harus 4 sampai 6 digit.';
+    }
+
+    final newSalt = SecurityHelper.generateSalt();
+    final updatedPwHash = cleanPw.isNotEmpty
+        ? SecurityHelper.hashSecret(cleanPw, newSalt)
+        : SecurityHelper.hashSecret(currentSecret, newSalt);
+    final updatedPinHash = cleanPin.isNotEmpty
+        ? SecurityHelper.hashSecret(cleanPin, newSalt)
+        : (validPin ? SecurityHelper.hashSecret(currentSecret, newSalt) : updatedPwHash);
+
+    final updated = me.copyWith(
+      passwordSalt: newSalt,
+      passwordHash: updatedPwHash,
+      pinHash: updatedPinHash,
+      pin: '',
+    );
+
+    await DatabaseHelper.instance.updateUser(updated);
+    _currentUser = updated;
+    await logAction('ubah_password', 'Pengguna ${me.name} memperbarui kredensial akunnya secara mandiri.');
+    await loadUsers(includeInactive: true);
+    return null;
+  }
+
+  /// Offline password recovery authorized strictly by an active Owner account.
+  Future<String?> recoverPasswordByOwner({
+    required String ownerUsername,
+    required String ownerSecret,
+    required String targetUsername,
+    required String newPassword,
+    String? newPin,
+  }) async {
+    final cleanOwner = ownerUsername.trim().toLowerCase();
+    final cleanTarget = targetUsername.trim().toLowerCase();
+    if (cleanOwner.isEmpty || ownerSecret.isEmpty || cleanTarget.isEmpty || newPassword.trim().length < 4) {
+      return 'Lengkapi kredensial Owner, username target, dan password baru (min. 4 karakter).';
+    }
+
+    UserModel? verifiedOwner = await DatabaseHelper.instance.loginWithPassword(cleanOwner, ownerSecret);
+    verifiedOwner ??= await DatabaseHelper.instance.loginWithPin(ownerSecret);
+    if (verifiedOwner == null || !verifiedOwner.isOwner) {
+      return 'Otorisasi gagal. Hanya kredensial Pemilik (Owner) yang valid untuk memulihkan akun.';
+    }
+
+    final allUsers = await DatabaseHelper.instance.getUsers(includeInactive: true);
+    final idx = allUsers.indexWhere((u) => u.username.toLowerCase() == cleanTarget);
+    if (idx == -1) {
+      return 'Username "$cleanTarget" tidak ditemukan.';
+    }
+    final target = allUsers[idx];
+    final cleanPin = newPin?.trim() ?? '';
+    if (cleanPin.isNotEmpty && (cleanPin.length < 4 || cleanPin.length > 6)) {
+      return 'PIN baru harus 4 sampai 6 digit.';
+    }
+
+    final salt = SecurityHelper.generateSalt();
+    final pwHash = SecurityHelper.hashSecret(newPassword.trim(), salt);
+    final pinHash = SecurityHelper.hashSecret(cleanPin.isNotEmpty ? cleanPin : newPassword.trim(), salt);
+
+    final updated = target.copyWith(
+      passwordSalt: salt,
+      passwordHash: pwHash,
+      pinHash: pinHash,
+      pin: '',
+    );
+    await DatabaseHelper.instance.updateUser(updated);
+    await DatabaseHelper.instance.insertAuditLog(
+      AuditLogModel(
+        timestamp: DateTime.now(),
+        userId: verifiedOwner.id ?? 0,
+        userName: verifiedOwner.name,
+        userRole: verifiedOwner.role,
+        actionType: 'pemulihan_password',
+        module: 'Autentikasi',
+        objectId: 'USER-${target.id}',
+        details: 'Pemulihan akun "@${target.username}" disetujui oleh Owner ${verifiedOwner.name}.',
+      ),
+    );
+    return null;
+  }
+
+  Future<void> logAction(
+    String actionType,
+    String details, {
+    String? module,
+    String objectId = '',
+    String beforeValue = '',
+    String afterValue = '',
+  }) async {
     if (_currentUser == null) return;
     final log = AuditLogModel(
       timestamp: DateTime.now(),
@@ -194,6 +311,10 @@ class AuthProvider extends ChangeNotifier {
       userName: _currentUser!.name,
       userRole: _currentUser!.role,
       actionType: actionType,
+      module: module,
+      objectId: objectId,
+      beforeValue: beforeValue,
+      afterValue: afterValue,
       details: details,
     );
     await DatabaseHelper.instance.insertAuditLog(log);

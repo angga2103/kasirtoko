@@ -65,6 +65,7 @@ class AppTheme {
   static const Color textMuted = Color(0xFF64748B);
   static const Color accentOrange = Color(0xFFF97316);
   static const Color accentRed = Color(0xFFEF4444);
+  static const Color accentRedSoft = Color(0xFFFEE2E2);
   static const Color accentBlue = Color(0xFF3B82F6);
   static const Color accentIndigo = Color(0xFF6366F1);
   static const Color accentPurple = Color(0xFF8B5CF6);

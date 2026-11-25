@@ -90,9 +90,10 @@ class ReceiptDialog extends StatelessWidget {
                             height: 44,
                             child: Image.file(File(settings.logoPath), fit: BoxFit.contain),
                           ),
-                          const SizedBox(height: 6),
+                          const SizedBox(height: 4),
                         ],
-                        Text(storeName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                        if (!(config.showLogo && config.hideStoreNameWithLogo && hasLogo))
+                          Text(storeName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                         if (config.showAddress && storeAddress.isNotEmpty)
                           Text(storeAddress, style: const TextStyle(fontSize: 10, color: AppTheme.textMuted)),
                         if (config.showPhone && storePhone.isNotEmpty)

@@ -41,6 +41,7 @@ class ReceiptConfigModel {
   final double lineSpacing; // 1.0 | 1.2 | 1.4
   final String dividerStyle; // '-' | '=' | '*'
   final bool showLogo;
+  final bool hideStoreNameWithLogo;
   final bool showAddress;
   final bool showPhone;
   final bool showCashier;
@@ -66,6 +67,7 @@ class ReceiptConfigModel {
     this.lineSpacing = 1.2,
     this.dividerStyle = '-',
     this.showLogo = true,
+    this.hideStoreNameWithLogo = false,
     this.showAddress = true,
     this.showPhone = true,
     this.showCashier = true,
@@ -103,6 +105,7 @@ class ReceiptConfigModel {
         'line_spacing': lineSpacing,
         'divider_style': dividerStyle,
         'show_logo': showLogo,
+        'hide_store_name_with_logo': hideStoreNameWithLogo,
         'show_address': showAddress,
         'show_phone': showPhone,
         'show_cashier': showCashier,
@@ -130,6 +133,7 @@ class ReceiptConfigModel {
       lineSpacing: (map['line_spacing'] as num?)?.toDouble() ?? 1.2,
       dividerStyle: (map['divider_style'] ?? '-').toString(),
       showLogo: map['show_logo'] ?? true,
+      hideStoreNameWithLogo: map['hide_store_name_with_logo'] ?? false,
       showAddress: map['show_address'] ?? true,
       showPhone: map['show_phone'] ?? true,
       showCashier: map['show_cashier'] ?? true,
@@ -170,6 +174,7 @@ class ReceiptConfigModel {
     double? lineSpacing,
     String? dividerStyle,
     bool? showLogo,
+    bool? hideStoreNameWithLogo,
     bool? showAddress,
     bool? showPhone,
     bool? showCashier,
@@ -195,6 +200,7 @@ class ReceiptConfigModel {
       lineSpacing: lineSpacing ?? this.lineSpacing,
       dividerStyle: dividerStyle ?? this.dividerStyle,
       showLogo: showLogo ?? this.showLogo,
+      hideStoreNameWithLogo: hideStoreNameWithLogo ?? this.hideStoreNameWithLogo,
       showAddress: showAddress ?? this.showAddress,
       showPhone: showPhone ?? this.showPhone,
       showCashier: showCashier ?? this.showCashier,

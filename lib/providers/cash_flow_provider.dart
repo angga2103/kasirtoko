@@ -5,10 +5,12 @@ import '../models/shift.dart';
 
 class CashFlowProvider extends ChangeNotifier {
   ShiftModel? _currentShift;
+  List<ShiftModel> _shiftHistory = [];
   List<CashFlowModel> _cashFlows = [];
   bool _isLoading = false;
 
   ShiftModel? get currentShift => _currentShift;
+  List<ShiftModel> get shiftHistory => _shiftHistory;
   List<CashFlowModel> get cashFlows => _cashFlows;
   bool get isLoading => _isLoading;
   bool get isShiftOpen => _currentShift != null && _currentShift!.isOpen;
@@ -18,10 +20,11 @@ class CashFlowProvider extends ChangeNotifier {
     notifyListeners();
 
     _currentShift = await DatabaseHelper.instance.getCurrentOpenShift();
+    _shiftHistory = await DatabaseHelper.instance.getShiftHistory(limit: 20);
     if (_currentShift != null) {
       _cashFlows = await DatabaseHelper.instance.getCashFlowsForShift(_currentShift!.id!);
     } else {
-      _cashFlows = await DatabaseHelper.instance.getRecentCashFlows(limit: 20);
+      _cashFlows = await DatabaseHelper.instance.getRecentCashFlows(limit: 30);
     }
 
     _isLoading = false;
@@ -42,7 +45,8 @@ class CashFlowProvider extends ChangeNotifier {
     );
 
     final id = await DatabaseHelper.instance.openShift(shift);
-    _currentShift = ShiftModel(
+    await checkOpenShift();
+    _currentShift ??= ShiftModel(
       id: id,
       cashierId: cashierId,
       cashierName: cashierName,
@@ -50,7 +54,6 @@ class CashFlowProvider extends ChangeNotifier {
       startingCash: startingCash,
       status: 'open',
     );
-    _cashFlows = [];
     notifyListeners();
   }
 
@@ -60,12 +63,22 @@ class CashFlowProvider extends ChangeNotifier {
     required double amount,
     required String note,
     required String cashierName,
+    String paymentMethod = 'tunai',
+    String accountName = 'Laci Kasir',
+    String sourceType = 'manual',
+    String sourceId = '',
+    bool isInternalTransfer = false,
   }) async {
     final flow = CashFlowModel(
-      shiftId: _currentShift?.id,
+      shiftId: (paymentMethod == 'tunai' && accountName == 'Laci Kasir') ? _currentShift?.id : null,
       type: type,
       category: category,
       amount: amount,
+      paymentMethod: paymentMethod,
+      accountName: accountName,
+      sourceType: sourceType,
+      sourceId: sourceId,
+      isInternalTransfer: isInternalTransfer,
       note: note,
       date: DateTime.now(),
       cashierName: cashierName,

@@ -41,8 +41,13 @@ jobs:
       - name: Get Dependencies
         run: flutter pub get
 
-      - name: Run Unit Tests
-        run: flutter test
+      - name: Install SQLite3 for FFI Integration Tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-0 libsqlite3-dev
+
+      - name: Run Unit & Integration Tests
+        run: flutter test -r expanded
 
       - name: Build Android Release APK
         id: build_apk
@@ -83,44 +88,37 @@ jobs:
           fi
           echo "Found APK: $APK_FILE"
           mkdir -p build/app/outputs/flutter-apk
-          cp "$APK_FILE" build/app/outputs/flutter-apk/KasirToko-v2.0.0.apk
+          cp "$APK_FILE" build/app/outputs/flutter-apk/KasirToko-v2.1.0.apk
           echo "## ✅ Build Success!" >> $GITHUB_STEP_SUMMARY
-          echo "APK successfully created: \`KasirToko-v2.0.0.apk\` ($(du -h "$APK_FILE" | cut -f1))" >> $GITHUB_STEP_SUMMARY
+          echo "APK successfully created: \`KasirToko-v2.1.0.apk\` ($(du -h "$APK_FILE" | cut -f1))" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: KasirToko-Release-APK
-          path: build/app/outputs/flutter-apk/KasirToko-v2.0.0.apk
+          path: build/app/outputs/flutter-apk/KasirToko-v2.1.0.apk
           retention-days: 14
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v2.0.0
-          name: "KasirToko Universal POS v2.0.0 - Android Release APK"
+          tag_name: v2.1.0
+          name: "KasirToko Universal POS v2.1.0 - Production Release APK"
           make_latest: true
           body: |
-            ## KasirToko Universal Android POS (Offline-First) v2.0.0
-            
-            Unduh file `KasirToko-v2.0.0.apk` di bawah ini dan pasang langsung di HP atau Tablet Android kasir Anda.
-            
-            ### Pembaruan Utama v2.0.0:
-            - **Konsep Universal POS:** Konfigurasi jenis usaha (Retail & Minimarket, Grosir & Agen, Konter HP & Aksesoris, Toko Elektronik, Jasa Servis, Perdagangan Umum) dengan modul & kategori adaptif tanpa menghapus data lama.
-            - **Desain Dashboard Modern & Responsif:** Mendukung HP ringkas (360dp+) hingga Tablet Dual-Pane (layar penuh kasir split catalog + keranjang).
-            - **Scanner Barcode Real-Time + Anti-Double-Scan:** Beep hardware & getar, mode beruntun di Kasir, tombol scan satu kali + validasi duplikat barcode di form produk, serta scan QR footer struk di modul Retur.
-            - **Modul Jasa Servis HP & Elektronik:** 8 status servis lengkap, penerimaan DP & pelunasan, sinkronisasi stok sparepart ke inventory, riwayat foto kondisi perangkat, cetak nota servis (Thermal/PDF/Dot Matrix) & update ke WhatsApp pelanggan.
-            - **Manajemen Printer & Template Struk Lengkap:** Multi-printer adapter (Thermal Bluetooth RFCOMM/USB OTG/LAN TCP/IP, Laser PDF A4, Dot Matrix ESC/P), kontrol laci kasir RJ11, 5 preset template struk + snapshot historis untuk cetak ulang.
-            - **Karyawan, Hak Akses Granular & Keamanan:** 7 Role + 15 izin fitur granular, autentikasi PIN maupun Username+Password dengan salted HMAC-SHA256 hashing.
-            - **Gudang, Pelanggan, Pembelian & Retur Akurat:** Perbaikan input Qty Surat Jalan & Surat Ambil Barang (`QuantityStepper`), manajemen Pelanggan & Pembelian Supplier, serta batas sisa kuantitas retur & laporan laba kotor multi-satuan akurat.
-            
-            ### Akun Bawaan (Username / PIN):
-            - **Owner:** `owner` / `123456`
-            - **Supervisor:** `supervisor` / `3333`
-            - **Kasir:** `kasir` / `1111`
-            - **Gudang:** `gudang` / `2222`
-          files: build/app/outputs/flutter-apk/KasirToko-v2.0.0.apk
+            ## KasirToko Universal Android POS (Offline-First) v2.1.0
+
+            Unduh file `KasirToko-v2.1.0.apk` di bawah ini dan pasang langsung di HP atau Tablet Android kasir Anda.
+
+            ### Pembaruan Production-Ready v2.1.0:
+            - **Autentikasi & Keamanan Login Modern:** Redesain layar login minimalis bebas kebocoran PIN/password bawaan, hashing salted HMAC-SHA256, ganti password/PIN mandiri, dan pemulihan kredensial offline terotorisasi Owner.
+            - **Kontrol Kasir (POS) Cepat & Uang Tunai Dinamis:** Tambah/kurang/ketik jumlah item langsung di kotak grid produk dengan validasi `trackStock`, nominal cepat adaptif, dan penegakan wajib Shift Kasir Aktif.
+            - **Integritas Keuangan, Kasbon & Pembelian Supplier:** Kasbon khusus pelanggan terdaftar dengan riwayat cicilan, kontrol kecukupan Kas Laci (anti-saldo negatif), buku hutang supplier & pembayaran campuran (`kas_laci`/`transfer`/`hutang`/`campuran`), serta pembatalan (`voidPurchase`) atomik.
+            - **Arus Kas, Retur, Stok Opname & Label Barcode:** Rekonsiliasi Arus Kas bebas hitung ganda (transfer internal netral), riwayat retur & batas sisa kuantitas ketat, Stok Opname scan berkelanjutan anti-duplikat, serta cetak stiker Barcode/QR Thermal ESC/POS dan Grid A4 PDF.
+            - **Cetak Logo Toko & Opsi Struk:** Dukungan bitmap raster ESC/POS `GS v 0` dan *white-matte compositing* PDF untuk logo PNG transparan serta opsi sembunyikan nama toko saat logo tampil (dengan fallback aman).
+            - **Pusat Analitik Bisnis & Audit Trail:** Laporan Penjualan, Produk, Pelanggan, Supplier, dan Keuntungan (HPP & Laba) berbasis query SQLite nyata dengan grafik tren, filter periode lengkap, ekspor PDF & Excel, serta Log Audit *read-only* lengkap dengan filter dan riwayat *before/after*.
+          files: build/app/outputs/flutter-apk/KasirToko-v2.1.0.apk
           draft: false
           prerelease: false
         env:

@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -7,16 +6,14 @@ import '../models/service_order.dart';
 import '../models/warehouse_doc.dart';
 import '../utils/currency_format.dart';
 import '../utils/date_format.dart';
+import 'printer/esc_pos_image_helper.dart';
 
 class DocumentService {
   static Future<pw.MemoryImage?> _loadLogo(String? logoPath) async {
-    if (logoPath == null || logoPath.isEmpty) return null;
-    try {
-      final f = File(logoPath);
-      if (await f.exists()) {
-        return pw.MemoryImage(await f.readAsBytes());
-      }
-    } catch (_) {}
+    final normalized = EscPosImageHelper.loadNormalizedPngBytes(logoPath, maxWidth: 320);
+    if (normalized != null && normalized.isNotEmpty) {
+      return pw.MemoryImage(normalized);
+    }
     return null;
   }
 
@@ -567,6 +564,103 @@ class DocumentService {
     await Printing.layoutPdf(
       onLayout: (PdfPageFormat format) async => doc.save(),
       name: 'Nota_Servis_${order.ticketNumber}',
+    );
+  }
+
+  static Future<void> printAnalyticsReportPdf({
+    required String storeName,
+    required String storeAddress,
+    required String periodLabel,
+    required Map<String, dynamic> analytics,
+    bool includeProfit = true,
+    String? logoPath,
+  }) async {
+    final doc = pw.Document();
+    final logoImg = await _loadLogo(logoPath);
+    final sales = Map<String, dynamic>.from(analytics['sales'] as Map? ?? {});
+    final profit = Map<String, dynamic>.from(analytics['profit'] as Map? ?? {});
+    final prods = Map<String, dynamic>.from(analytics['products'] as Map? ?? {});
+    final topSelling = (prods['topSelling'] as List? ?? []).take(15).toList();
+
+    doc.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(28),
+        build: (_) => [
+          pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            children: [
+              pw.Row(
+                children: [
+                  if (logoImg != null) ...[
+                    pw.Container(width: 40, height: 40, child: pw.Image(logoImg, fit: pw.BoxFit.contain)),
+                    pw.SizedBox(width: 10),
+                  ],
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text(storeName, style: pw.TextStyle(fontSize: 15, fontWeight: pw.FontWeight.bold)),
+                      pw.Text(storeAddress, style: const pw.TextStyle(fontSize: 9)),
+                    ],
+                  ),
+                ],
+              ),
+              pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.end,
+                children: [
+                  pw.Text('LAPORAN ANALITIK PENJUALAN', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
+                  pw.Text('Periode: $periodLabel', style: const pw.TextStyle(fontSize: 9)),
+                ],
+              ),
+            ],
+          ),
+          pw.Divider(height: 18),
+          pw.Text('Ringkasan Penjualan', style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold)),
+          pw.SizedBox(height: 6),
+          pw.TableHelper.fromTextArray(
+            headers: ['Metrik', 'Nilai'],
+            data: [
+              ['Total Omzet Kotor', CurrencyHelper.format((sales['totalRevenue'] as num?)?.toDouble() ?? 0.0)],
+              ['Total Diskon', CurrencyHelper.format((sales['totalDiscount'] as num?)?.toDouble() ?? 0.0)],
+              ['Total Retur', CurrencyHelper.format((sales['totalReturn'] as num?)?.toDouble() ?? 0.0)],
+              ['Penjualan Bersih', CurrencyHelper.format((sales['netSales'] as num?)?.toDouble() ?? 0.0)],
+              ['Jumlah Transaksi', '${sales['trxCount'] ?? 0} Nota'],
+              ['Rata-rata Transaksi', CurrencyHelper.format((sales['avgTrxValue'] as num?)?.toDouble() ?? 0.0)],
+              ['Tunai / QRIS / Transfer / Kasbon',
+                  '${CurrencyHelper.format((sales['cashSales'] as num?)?.toDouble() ?? 0.0)} / ${CurrencyHelper.format((sales['qrisSales'] as num?)?.toDouble() ?? 0.0)} / ${CurrencyHelper.format((sales['transferSales'] as num?)?.toDouble() ?? 0.0)} / ${CurrencyHelper.format((sales['kasbonSales'] as num?)?.toDouble() ?? 0.0)}'],
+              if (includeProfit) ...[
+                ['Total HPP', CurrencyHelper.format((profit['totalHpp'] as num?)?.toDouble() ?? 0.0)],
+                ['Laba Kotor', CurrencyHelper.format((profit['grossProfit'] as num?)?.toDouble() ?? 0.0)],
+              ],
+            ],
+            headerStyle: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold),
+            cellStyle: const pw.TextStyle(fontSize: 9),
+          ),
+          pw.SizedBox(height: 16),
+          pw.Text('Top Produk Terlaris', style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold)),
+          pw.SizedBox(height: 6),
+          pw.TableHelper.fromTextArray(
+            headers: ['Produk', 'Kategori', 'Terjual', 'Omzet', if (includeProfit) 'Laba'],
+            data: [
+              for (final p in topSelling)
+                [
+                  p['name'].toString(),
+                  p['category'].toString(),
+                  '${((p['qtySold'] as num?)?.toDouble() ?? 0).toStringAsFixed(0)} ${p['unit'] ?? ""}',
+                  CurrencyHelper.format((p['revenue'] as num?)?.toDouble() ?? 0.0),
+                  if (includeProfit) CurrencyHelper.format((p['profit'] as num?)?.toDouble() ?? 0.0),
+                ],
+            ],
+            headerStyle: pw.TextStyle(fontSize: 8.5, fontWeight: pw.FontWeight.bold),
+            cellStyle: const pw.TextStyle(fontSize: 8.5),
+          ),
+        ],
+      ),
+    );
+
+    await Printing.layoutPdf(
+      onLayout: (PdfPageFormat format) async => doc.save(),
+      name: 'Laporan_Bisnis_$periodLabel',
     );
   }
 }

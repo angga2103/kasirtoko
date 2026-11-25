@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
@@ -14,6 +15,7 @@ import '../models/product_batch.dart';
 import '../models/product_unit.dart';
 import '../models/promo.dart';
 import '../models/purchase.dart';
+import '../models/return_item.dart';
 import '../models/return_order.dart';
 import '../models/service_order.dart';
 import '../models/shift.dart';
@@ -45,12 +47,13 @@ class BarcodeConflictResult {
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
   static Database? _database;
+  static String? _testDbPath;
 
   DatabaseHelper._init();
 
   Future<Database> get database async {
     if (_database != null && _database!.isOpen) return _database!;
-    _database = await _initDB('kasirtoko.db');
+    _database = await _initDB(_testDbPath ?? 'kasirtoko.db');
     return _database!;
   }
 
@@ -62,22 +65,53 @@ class DatabaseHelper {
     _database = null;
   }
 
-  Future<Database> _initDB(String filePath) async {
-    final dbDir = await getApplicationDocumentsDirectory();
-    final path = p.join(dbDir.path, filePath);
-
-    // Pre-migration safety backup for existing v1 databases
-    final dbFile = File(path);
-    final preV2Backup = File(p.join(dbDir.path, 'kasirtoko_pre_v2_backup.db'));
-    if (await dbFile.exists() && !await preV2Backup.exists()) {
+  @visibleForTesting
+  Future<Database> openTestDatabase({
+    String path = inMemoryDatabasePath,
+    bool deleteIfExists = true,
+  }) async {
+    await resetConnection();
+    _testDbPath = path;
+    if (deleteIfExists && path != inMemoryDatabasePath) {
       try {
-        await dbFile.copy(preV2Backup.path);
+        final f = File(path);
+        if (await f.exists()) await f.delete();
       } catch (_) {}
+    }
+    _database = await openDatabase(
+      path,
+      version: 3,
+      onCreate: _createDB,
+      onUpgrade: _onUpgrade,
+    );
+    return _database!;
+  }
+
+  @visibleForTesting
+  Future<void> closeTestDatabase() async {
+    await resetConnection();
+    _testDbPath = null;
+  }
+
+  Future<Database> _initDB(String filePath) async {
+    String path = filePath;
+    if (filePath != inMemoryDatabasePath && !p.isAbsolute(filePath)) {
+      final dbDir = await getApplicationDocumentsDirectory();
+      path = p.join(dbDir.path, filePath);
+
+      // Pre-migration safety backup for existing databases
+      final dbFile = File(path);
+      final preV3Backup = File(p.join(dbDir.path, 'kasirtoko_pre_v3_backup.db'));
+      if (await dbFile.exists() && !await preV3Backup.exists()) {
+        try {
+          await dbFile.copy(preV3Backup.path);
+        } catch (_) {}
+      }
     }
 
     return await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -169,6 +203,101 @@ class DatabaseHelper {
       // 6. Create new v2 tables
       await _createV2NewTables(db);
     }
+
+    if (oldVersion < 3) {
+      await _addColumnIfMissing(db, 'products', 'track_stock', 'INTEGER NOT NULL DEFAULT 1');
+      await db.rawUpdate('UPDATE products SET track_stock = 0 WHERE is_service = 1');
+
+      await _addColumnIfMissing(db, 'transactions', 'customer_id', 'INTEGER');
+      await _addColumnIfMissing(db, 'transactions', 'shift_id', 'INTEGER');
+      await _addColumnIfMissing(db, 'customer_debts', 'customer_id', 'INTEGER');
+
+      await _addColumnIfMissing(db, 'purchases', 'cash_paid', 'REAL NOT NULL DEFAULT 0.0');
+      await _addColumnIfMissing(db, 'purchases', 'transfer_paid', 'REAL NOT NULL DEFAULT 0.0');
+      await _addColumnIfMissing(db, 'purchases', 'credit_amount', 'REAL NOT NULL DEFAULT 0.0');
+      await _addColumnIfMissing(db, 'purchases', 'transfer_account', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'purchases', 'transfer_ref', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'purchases', 'due_date', 'TEXT');
+      await _addColumnIfMissing(db, 'purchases', 'status', "TEXT NOT NULL DEFAULT 'completed'");
+      await _addColumnIfMissing(db, 'purchases', 'shift_id', 'INTEGER');
+      await db.rawUpdate(
+        "UPDATE purchases SET cash_paid = total_amount WHERE payment_method = 'kas_laci' AND cash_paid = 0",
+      );
+      await db.rawUpdate(
+        "UPDATE purchases SET transfer_paid = total_amount WHERE payment_method = 'transfer' AND transfer_paid = 0",
+      );
+      await db.rawUpdate(
+        "UPDATE purchases SET credit_amount = total_amount WHERE payment_method = 'hutang' AND credit_amount = 0",
+      );
+
+      await _addColumnIfMissing(db, 'cash_flows', 'payment_method', "TEXT NOT NULL DEFAULT 'tunai'");
+      await _addColumnIfMissing(db, 'cash_flows', 'account_name', "TEXT NOT NULL DEFAULT 'Laci Kasir'");
+      await _addColumnIfMissing(db, 'cash_flows', 'source_type', "TEXT NOT NULL DEFAULT 'manual'");
+      await _addColumnIfMissing(db, 'cash_flows', 'source_id', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'cash_flows', 'is_internal_transfer', 'INTEGER NOT NULL DEFAULT 0');
+
+      await _addColumnIfMissing(db, 'attendances', 'device_info', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'attendances', 'is_corrected', 'INTEGER NOT NULL DEFAULT 0');
+      await _addColumnIfMissing(db, 'attendances', 'correction_note', "TEXT NOT NULL DEFAULT ''");
+
+      await _addColumnIfMissing(db, 'audit_logs', 'module', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'audit_logs', 'object_id', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'audit_logs', 'before_value', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'audit_logs', 'after_value', "TEXT NOT NULL DEFAULT ''");
+
+      await _createV3NewTables(db);
+    }
+  }
+
+  Future<void> _createV3NewTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS customer_debt_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        debt_id INTEGER NOT NULL,
+        customer_id INTEGER,
+        amount REAL NOT NULL,
+        payment_method TEXT NOT NULL DEFAULT 'tunai',
+        shift_id INTEGER,
+        cashier_name TEXT NOT NULL DEFAULT 'Kasir',
+        date TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (debt_id) REFERENCES customer_debts (id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS supplier_debts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        purchase_id INTEGER NOT NULL,
+        purchase_number TEXT NOT NULL,
+        supplier_name TEXT NOT NULL,
+        supplier_phone TEXT NOT NULL DEFAULT '',
+        total_debt REAL NOT NULL,
+        paid_debt REAL NOT NULL DEFAULT 0.0,
+        purchase_date TEXT NOT NULL,
+        due_date TEXT,
+        last_payment_date TEXT,
+        status TEXT NOT NULL DEFAULT 'belum_lunas',
+        note TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (purchase_id) REFERENCES purchases (id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS supplier_debt_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        supplier_debt_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        payment_source TEXT NOT NULL DEFAULT 'kas_laci',
+        account_name TEXT NOT NULL DEFAULT 'Laci Kasir',
+        reference_number TEXT NOT NULL DEFAULT '',
+        shift_id INTEGER,
+        paid_by TEXT NOT NULL DEFAULT 'Admin',
+        date TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (supplier_debt_id) REFERENCES supplier_debts (id) ON DELETE CASCADE
+      )
+    ''');
   }
 
   Future<void> _createV2NewTables(Database db) async {
@@ -194,6 +323,14 @@ class DatabaseHelper {
         date TEXT NOT NULL,
         total_amount REAL NOT NULL,
         payment_method TEXT NOT NULL DEFAULT 'kas_laci',
+        cash_paid REAL NOT NULL DEFAULT 0.0,
+        transfer_paid REAL NOT NULL DEFAULT 0.0,
+        credit_amount REAL NOT NULL DEFAULT 0.0,
+        transfer_account TEXT NOT NULL DEFAULT '',
+        transfer_ref TEXT NOT NULL DEFAULT '',
+        due_date TEXT,
+        status TEXT NOT NULL DEFAULT 'completed',
+        shift_id INTEGER,
         note TEXT NOT NULL DEFAULT '',
         created_by TEXT NOT NULL DEFAULT 'Admin'
       )
@@ -322,6 +459,7 @@ class DatabaseHelper {
         category TEXT NOT NULL,
         barcode TEXT,
         is_service INTEGER NOT NULL DEFAULT 0,
+        track_stock INTEGER NOT NULL DEFAULT 1,
         base_unit TEXT NOT NULL,
         cost_price REAL NOT NULL,
         selling_price REAL NOT NULL,
@@ -378,6 +516,8 @@ class DatabaseHelper {
         date TEXT NOT NULL,
         cashier_id INTEGER NOT NULL,
         cashier_name TEXT NOT NULL,
+        customer_id INTEGER,
+        shift_id INTEGER,
         customer_name TEXT NOT NULL,
         customer_phone TEXT,
         subtotal REAL NOT NULL,
@@ -474,6 +614,11 @@ class DatabaseHelper {
         type TEXT NOT NULL,
         category TEXT NOT NULL,
         amount REAL NOT NULL,
+        payment_method TEXT NOT NULL DEFAULT 'tunai',
+        account_name TEXT NOT NULL DEFAULT 'Laci Kasir',
+        source_type TEXT NOT NULL DEFAULT 'manual',
+        source_id TEXT NOT NULL DEFAULT '',
+        is_internal_transfer INTEGER NOT NULL DEFAULT 0,
         note TEXT,
         date TEXT NOT NULL,
         cashier_name TEXT NOT NULL
@@ -492,7 +637,10 @@ class DatabaseHelper {
         challenge_code TEXT NOT NULL,
         validation_hash TEXT NOT NULL,
         photo_path TEXT NOT NULL,
-        is_liveness_passed INTEGER NOT NULL DEFAULT 1
+        is_liveness_passed INTEGER NOT NULL DEFAULT 1,
+        device_info TEXT NOT NULL DEFAULT '',
+        is_corrected INTEGER NOT NULL DEFAULT 0,
+        correction_note TEXT NOT NULL DEFAULT ''
       )
     ''');
 
@@ -504,6 +652,10 @@ class DatabaseHelper {
         user_name TEXT NOT NULL,
         user_role TEXT NOT NULL,
         action_type TEXT NOT NULL,
+        module TEXT NOT NULL DEFAULT '',
+        object_id TEXT NOT NULL DEFAULT '',
+        before_value TEXT NOT NULL DEFAULT '',
+        after_value TEXT NOT NULL DEFAULT '',
         details TEXT NOT NULL
       )
     ''');
@@ -511,6 +663,7 @@ class DatabaseHelper {
     await db.execute('''
       CREATE TABLE customer_debts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER,
         customer_name TEXT NOT NULL,
         customer_phone TEXT,
         invoice_number TEXT NOT NULL,
@@ -581,6 +734,7 @@ class DatabaseHelper {
     ''');
 
     await _createV2NewTables(db);
+    await _createV3NewTables(db);
     await _seedInitialData(db);
   }
 
@@ -1048,10 +1202,78 @@ class DatabaseHelper {
   }
 
   // ================= TRANSACTIONS & SHIFT SYNC =================
+  Future<void> _ensureSufficientShiftCash(Transaction txn, int? shiftId, double amount) async {
+    if (amount <= 0) return;
+    if (shiftId == null) {
+      throw StateError('Shift kasir harus dibuka sebelum mengeluarkan uang tunai dari laci.');
+    }
+    final shiftRows = await txn.query('shifts', where: 'id = ?', whereArgs: [shiftId], limit: 1);
+    if (shiftRows.isEmpty) {
+      throw StateError('Data shift aktif tidak ditemukan.');
+    }
+    final shift = ShiftModel.fromMap(shiftRows.first);
+    if (!shift.isOpen) {
+      throw StateError('Shift kasir sudah ditutup dan tidak dapat digunakan untuk transaksi kas.');
+    }
+    if (shift.expectedCash + 0.001 < amount) {
+      throw StateError(
+        'Saldo kas laci tidak mencukupi (Tersedia: Rp ${shift.expectedCash.toInt()}, Dibutuhkan: Rp ${amount.toInt()}).',
+      );
+    }
+  }
+
   Future<int> insertTransaction(TransactionModel trx, {int? shiftId}) async {
     final db = await database;
+    final targetShiftId = shiftId ?? trx.shiftId;
     return await db.transaction((txn) async {
-      final trxId = await txn.insert('transactions', trx.toMap());
+      // 1. Strict Shift Enforcement
+      if (targetShiftId == null) {
+        throw StateError('Kasir wajib membuka shift terlebih dahulu sebelum melakukan transaksi.');
+      }
+      final shiftRows = await txn.query('shifts', where: 'id = ?', whereArgs: [targetShiftId], limit: 1);
+      if (shiftRows.isEmpty || ShiftModel.fromMap(shiftRows.first).status != 'open') {
+        throw StateError('Shift tidak valid atau sudah ditutup. Silakan buka shift aktif terlebih dahulu.');
+      }
+
+      // 2. Strict Registered Customer Rule for Kasbon
+      if (trx.paymentMethod == 'kasbon') {
+        if (trx.customerId == null) {
+          throw StateError('Kasbon hanya diperbolehkan untuk pelanggan yang sudah terdaftar.');
+        }
+        final custRows = await txn.query('customers', where: 'id = ?', whereArgs: [trx.customerId], limit: 1);
+        if (custRows.isEmpty) {
+          throw StateError('Pelanggan kasbon tidak ditemukan dalam database pelanggan terdaftar.');
+        }
+        final regName = (custRows.first['name'] ?? '').toString().trim().toLowerCase();
+        if (regName.isEmpty || regName == 'pelanggan umum') {
+          throw StateError('Pelanggan Umum tidak diperbolehkan melakukan kasbon. Pilih pelanggan terdaftar.');
+        }
+      }
+
+      // 3. Validate stock inside transaction before inserting
+      for (final item in trx.items) {
+        if (!item.isService) {
+          final prodRows = await txn.query('products', where: 'id = ?', whereArgs: [item.productId], limit: 1);
+          if (prodRows.isEmpty) {
+            throw StateError('Produk "${item.productName}" tidak ditemukan di database.');
+          }
+          final p = prodRows.first;
+          final tracksStock = (p['track_stock'] ?? 1) == 1;
+          if (tracksStock) {
+            final currentStock = (p['stock'] as num?)?.toDouble() ?? 0.0;
+            if (currentStock + 0.0001 < item.baseStockQty) {
+              throw StateError(
+                'Stok "${item.productName}" tidak mencukupi (tersedia ${currentStock.toStringAsFixed(1)}, diminta ${item.baseStockQty.toStringAsFixed(1)}).',
+              );
+            }
+          }
+        }
+      }
+
+      final trxMap = trx.toMap();
+      trxMap['shift_id'] = targetShiftId;
+      if (trx.customerId != null) trxMap['customer_id'] = trx.customerId;
+      final trxId = await txn.insert('transactions', trxMap);
 
       for (final item in trx.items) {
         await txn.insert('transaction_items', {
@@ -1070,48 +1292,51 @@ class DatabaseHelper {
         });
 
         if (!item.isService) {
-          final deductAmount = item.baseStockQty;
-          await txn.rawUpdate(
-            'UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?',
-            [deductAmount, item.productId],
-          );
-        }
-      }
-
-      // Sync active shift sales totals
-      if (shiftId != null) {
-        if (trx.paymentMethod == 'tunai') {
-          await txn.rawUpdate(
-            'UPDATE shifts SET total_sales_cash = total_sales_cash + ? WHERE id = ?',
-            [trx.grandTotal, shiftId],
-          );
-        } else if (trx.paymentMethod == 'qris') {
-          await txn.rawUpdate(
-            'UPDATE shifts SET total_sales_qris = total_sales_qris + ? WHERE id = ?',
-            [trx.grandTotal, shiftId],
-          );
-        } else if (trx.paymentMethod == 'transfer') {
-          await txn.rawUpdate(
-            'UPDATE shifts SET total_sales_transfer = total_sales_transfer + ? WHERE id = ?',
-            [trx.grandTotal, shiftId],
-          );
-        } else if (trx.paymentMethod == 'kasbon') {
-          await txn.rawUpdate(
-            'UPDATE shifts SET total_sales_kasbon = total_sales_kasbon + ? WHERE id = ?',
-            [trx.grandTotal, shiftId],
-          );
-          if (trx.amountPaid > 0) {
+          final prodRows = await txn.query('products', columns: ['track_stock'], where: 'id = ?', whereArgs: [item.productId], limit: 1);
+          final tracksStock = prodRows.isEmpty || (prodRows.first['track_stock'] ?? 1) == 1;
+          if (tracksStock) {
             await txn.rawUpdate(
-              'UPDATE shifts SET total_cash_in = total_cash_in + ? WHERE id = ?',
-              [trx.amountPaid, shiftId],
+              'UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?',
+              [item.baseStockQty, item.productId],
             );
           }
         }
       }
 
+      // 4. Sync active shift sales totals
+      if (trx.paymentMethod == 'tunai') {
+        await txn.rawUpdate(
+          'UPDATE shifts SET total_sales_cash = total_sales_cash + ? WHERE id = ?',
+          [trx.grandTotal, targetShiftId],
+        );
+      } else if (trx.paymentMethod == 'qris') {
+        await txn.rawUpdate(
+          'UPDATE shifts SET total_sales_qris = total_sales_qris + ? WHERE id = ?',
+          [trx.grandTotal, targetShiftId],
+        );
+      } else if (trx.paymentMethod == 'transfer') {
+        await txn.rawUpdate(
+          'UPDATE shifts SET total_sales_transfer = total_sales_transfer + ? WHERE id = ?',
+          [trx.grandTotal, targetShiftId],
+        );
+      } else if (trx.paymentMethod == 'kasbon') {
+        await txn.rawUpdate(
+          'UPDATE shifts SET total_sales_kasbon = total_sales_kasbon + ? WHERE id = ?',
+          [trx.grandTotal, targetShiftId],
+        );
+        if (trx.amountPaid > 0) {
+          await txn.rawUpdate(
+            'UPDATE shifts SET total_cash_in = total_cash_in + ? WHERE id = ?',
+            [trx.amountPaid, targetShiftId],
+          );
+        }
+      }
+
+      // 5. Record Kasbon ledger & initial DP payment history
       if (trx.paymentMethod == 'kasbon') {
         final dueDate = DateTime.now().add(const Duration(days: 30));
-        await txn.insert('customer_debts', {
+        final debtId = await txn.insert('customer_debts', {
+          'customer_id': trx.customerId,
           'customer_name': trx.customerName,
           'customer_phone': trx.customerPhone,
           'invoice_number': trx.invoiceNumber,
@@ -1119,8 +1344,36 @@ class DatabaseHelper {
           'paid_debt': trx.amountPaid,
           'transaction_date': trx.date.toIso8601String(),
           'due_date': dueDate.toIso8601String(),
+          'last_payment_date': trx.amountPaid > 0 ? trx.date.toIso8601String() : null,
           'note': trx.note,
         });
+
+        if (trx.amountPaid > 0) {
+          await txn.insert('customer_debt_payments', {
+            'debt_id': debtId,
+            'customer_id': trx.customerId,
+            'amount': trx.amountPaid,
+            'payment_method': 'tunai',
+            'shift_id': targetShiftId,
+            'cashier_name': trx.cashierName,
+            'date': trx.date.toIso8601String(),
+            'note': 'DP / Uang Muka Kasbon #${trx.invoiceNumber}',
+          });
+          await txn.insert('cash_flows', {
+            'shift_id': targetShiftId,
+            'type': 'in',
+            'category': 'DP Kasbon',
+            'amount': trx.amountPaid,
+            'payment_method': 'tunai',
+            'account_name': 'Laci Kasir',
+            'source_type': 'kasbon_bayar',
+            'source_id': trx.invoiceNumber,
+            'is_internal_transfer': 0,
+            'note': 'DP Kasbon ${trx.customerName} (#${trx.invoiceNumber})',
+            'date': trx.date.toIso8601String(),
+            'cashier_name': trx.cashierName,
+          });
+        }
       }
 
       return trxId;
@@ -1135,24 +1388,86 @@ class DatabaseHelper {
       final trx = TransactionModel.fromMap(res.first);
       if (trx.status == 'voided') return;
 
+      final targetShiftId = shiftId ?? trx.shiftId;
+      final alreadyReturnedRows = await txn.rawQuery('''
+        SELECT ri.product_id, ri.unit_name, SUM(ri.return_qty) as total_ret
+        FROM return_items ri
+        JOIN return_orders ro ON ri.return_order_id = ro.id
+        WHERE ro.transaction_id = ?
+        GROUP BY ri.product_id, ri.unit_name
+      ''', [trxId]);
+      final returnedMap = <String, double>{
+        for (final r in alreadyReturnedRows)
+          '${r['product_id']}_${r['unit_name']}': (r['total_ret'] as num?)?.toDouble() ?? 0.0,
+      };
+
       final itemsRes = await txn.query('transaction_items', where: 'transaction_id = ?', whereArgs: [trxId]);
       for (final m in itemsRes) {
         final item = TransactionItemModel.fromMap(m);
         if (!item.isService) {
-          await txn.rawUpdate(
-            'UPDATE products SET stock = stock + ? WHERE id = ?',
-            [item.baseStockQty, item.productId],
-          );
+          final prodRows = await txn.query('products', columns: ['track_stock'], where: 'id = ?', whereArgs: [item.productId], limit: 1);
+          final tracksStock = prodRows.isEmpty || (prodRows.first['track_stock'] ?? 1) == 1;
+          if (tracksStock) {
+            final key = '${item.productId}_${item.unitName}';
+            final retQty = returnedMap[key] ?? 0.0;
+            final unreturnedQty = (item.qty - retQty).clamp(0.0, item.qty);
+            final restoreBase = unreturnedQty * item.conversionFactor;
+            if (restoreBase > 0) {
+              await txn.rawUpdate(
+                'UPDATE products SET stock = stock + ? WHERE id = ?',
+                [restoreBase, item.productId],
+              );
+            }
+          }
         }
       }
 
       await txn.update('transactions', {'status': 'voided'}, where: 'id = ?', whereArgs: [trxId]);
 
-      if (shiftId != null && trx.paymentMethod == 'tunai') {
-        await txn.rawUpdate(
-          'UPDATE shifts SET total_sales_cash = MAX(0, total_sales_cash - ?) WHERE id = ?',
-          [trx.grandTotal, shiftId],
+      if (targetShiftId != null) {
+        if (trx.paymentMethod == 'tunai') {
+          await txn.rawUpdate(
+            'UPDATE shifts SET total_sales_cash = MAX(0, total_sales_cash - ?) WHERE id = ?',
+            [trx.grandTotal, targetShiftId],
+          );
+        } else if (trx.paymentMethod == 'qris') {
+          await txn.rawUpdate(
+            'UPDATE shifts SET total_sales_qris = MAX(0, total_sales_qris - ?) WHERE id = ?',
+            [trx.grandTotal, targetShiftId],
+          );
+        } else if (trx.paymentMethod == 'transfer') {
+          await txn.rawUpdate(
+            'UPDATE shifts SET total_sales_transfer = MAX(0, total_sales_transfer - ?) WHERE id = ?',
+            [trx.grandTotal, targetShiftId],
+          );
+        } else if (trx.paymentMethod == 'kasbon') {
+          await txn.rawUpdate(
+            'UPDATE shifts SET total_sales_kasbon = MAX(0, total_sales_kasbon - ?) WHERE id = ?',
+            [trx.grandTotal, targetShiftId],
+          );
+        }
+      }
+
+      // Preserve debt payment history cleanly if a kasbon transaction is voided
+      if (trx.paymentMethod == 'kasbon') {
+        final debtRows = await txn.query(
+          'customer_debts',
+          where: 'invoice_number = ?',
+          whereArgs: [trx.invoiceNumber],
+          limit: 1,
         );
+        if (debtRows.isNotEmpty) {
+          final debt = CustomerDebtModel.fromMap(debtRows.first);
+          await txn.update(
+            'customer_debts',
+            {
+              'total_debt': debt.paidDebt, // Zeroes unpaid remainder without deleting payment ledger history
+              'note': '${debt.note} [NOTA VOID - Sisa Tagihan Dibatalkan, Riwayat Bayar Dipertahankan]'.trim(),
+            },
+            where: 'id = ?',
+            whereArgs: [debt.id],
+          );
+        }
       }
     });
   }
@@ -1198,6 +1513,89 @@ class DatabaseHelper {
     return list;
   }
 
+  Future<List<TransactionModel>> getTransactionsByDateRange(
+    DateTime start,
+    DateTime end, {
+    String? query,
+    String? barcode,
+    int limit = 200,
+  }) async {
+    final db = await database;
+    final startIso = DateTime(start.year, start.month, start.day).toIso8601String();
+    final endIso = DateTime(end.year, end.month, end.day, 23, 59, 59, 999).toIso8601String();
+
+    final res = await db.query(
+      'transactions',
+      where: 'date >= ? AND date <= ?',
+      whereArgs: [startIso, endIso],
+      orderBy: 'date DESC',
+      limit: limit,
+    );
+
+    final List<TransactionModel> list = [];
+    final qLower = query?.trim().toLowerCase() ?? '';
+    final bLower = barcode?.trim().toLowerCase() ?? '';
+
+    for (final map in res) {
+      final trx = TransactionModel.fromMap(map);
+      final itemRes = await db.query(
+        'transaction_items',
+        where: 'transaction_id = ?',
+        whereArgs: [trx.id],
+      );
+      trx.items = itemRes.map((e) => TransactionItemModel.fromMap(e)).toList();
+
+      if (qLower.isNotEmpty) {
+        final matchTrx = trx.invoiceNumber.toLowerCase().contains(qLower) ||
+            trx.customerName.toLowerCase().contains(qLower) ||
+            trx.items.any((i) =>
+                i.productName.toLowerCase().contains(qLower) ||
+                i.productCode.toLowerCase().contains(qLower));
+        if (!matchTrx) continue;
+      }
+      if (bLower.isNotEmpty) {
+        final matchBar = await db.rawQuery('''
+          SELECT ti.id FROM transaction_items ti
+          JOIN products p ON ti.product_id = p.id
+          LEFT JOIN product_units pu ON pu.product_id = p.id
+          WHERE ti.transaction_id = ? AND (LOWER(p.barcode) = ? OR LOWER(p.code) = ? OR LOWER(pu.barcode) = ?)
+          LIMIT 1
+        ''', [trx.id, bLower, bLower, bLower]);
+        if (matchBar.isEmpty) continue;
+      }
+      list.add(trx);
+    }
+    return list;
+  }
+
+  Future<List<ReturnOrderModel>> getReturnOrders({DateTime? start, DateTime? end, int limit = 100}) async {
+    final db = await database;
+    String? where;
+    List<dynamic>? whereArgs;
+    if (start != null && end != null) {
+      where = 'date >= ? AND date <= ?';
+      whereArgs = [
+        DateTime(start.year, start.month, start.day).toIso8601String(),
+        DateTime(end.year, end.month, end.day, 23, 59, 59, 999).toIso8601String(),
+      ];
+    }
+    final res = await db.query(
+      'return_orders',
+      where: where,
+      whereArgs: whereArgs,
+      orderBy: 'date DESC',
+      limit: limit,
+    );
+    final List<ReturnOrderModel> list = [];
+    for (final m in res) {
+      final ro = ReturnOrderModel.fromMap(m);
+      final itemRows = await db.query('return_items', where: 'return_order_id = ?', whereArgs: [ro.id]);
+      ro.items = itemRows.map((e) => ReturnItemModel.fromMap(e)).toList();
+      list.add(ro);
+    }
+    return list;
+  }
+
   // ================= RETURNS (RETUR BARANG) =================
   Future<Map<String, double>> getReturnedQuantitiesForTransaction(int trxId) async {
     final db = await database;
@@ -1220,6 +1618,56 @@ class DatabaseHelper {
   Future<int> insertReturnOrder(ReturnOrderModel ret, {int? shiftId}) async {
     final db = await database;
     return await db.transaction((txn) async {
+      final trxRows = await txn.query('transactions', where: 'id = ?', whereArgs: [ret.transactionId], limit: 1);
+      if (trxRows.isEmpty) {
+        throw StateError('Transaksi asal tidak ditemukan.');
+      }
+      final origTrx = TransactionModel.fromMap(trxRows.first);
+      if (origTrx.status == 'voided' || origTrx.status == 'void') {
+        throw StateError('Transaksi yang sudah dibatalkan (VOID) tidak dapat diretur.');
+      }
+
+      // Compute prior returns inside transaction to prevent concurrent/double over-return
+      final origItems = await txn.query(
+        'transaction_items',
+        where: 'transaction_id = ?',
+        whereArgs: [ret.transactionId],
+      );
+      final purchasedMap = <String, double>{};
+      for (final oi in origItems) {
+        final key = '${oi['product_id']}_${oi['unit_name']}';
+        purchasedMap[key] = (purchasedMap[key] ?? 0.0) + ((oi['qty'] as num).toDouble());
+      }
+
+      final priorRetRows = await txn.rawQuery('''
+        SELECT ri.product_id, ri.unit_name, SUM(ri.return_qty) as total_ret
+        FROM return_items ri
+        JOIN return_orders ro ON ri.return_order_id = ro.id
+        WHERE ro.transaction_id = ?
+        GROUP BY ri.product_id, ri.unit_name
+      ''', [ret.transactionId]);
+      final retMap = <String, double>{
+        for (final r in priorRetRows)
+          '${r['product_id']}_${r['unit_name']}': (r['total_ret'] as num?)?.toDouble() ?? 0.0,
+      };
+
+      for (final item in ret.items) {
+        final key = '${item.productId}_${item.unitName}';
+        final purchased = purchasedMap[key] ?? 0.0;
+        final alreadyRet = retMap[key] ?? 0.0;
+        final remainingAllowed = purchased - alreadyRet;
+        if (item.returnQty <= 0 || item.returnQty > remainingAllowed + 0.0001) {
+          throw StateError(
+            'Jumlah retur "${item.productName}" (${item.returnQty}) melebihi sisa yang dapat diretur (${remainingAllowed.toStringAsFixed(1)} ${item.unitName}).',
+          );
+        }
+        retMap[key] = alreadyRet + item.returnQty;
+      }
+
+      if (ret.refundMethod == 'tunai' && ret.totalRefund > 0) {
+        await _ensureSufficientShiftCash(txn, shiftId, ret.totalRefund);
+      }
+
       final retId = await txn.insert('return_orders', ret.toMap());
 
       for (final item in ret.items) {
@@ -1236,39 +1684,21 @@ class DatabaseHelper {
         });
 
         if (item.condition == 'baik') {
-          await txn.rawUpdate(
-            'UPDATE products SET stock = stock + ? WHERE id = ?',
-            [item.baseStockQty, item.productId],
-          );
+          final prodRows = await txn.query('products', columns: ['track_stock'], where: 'id = ?', whereArgs: [item.productId], limit: 1);
+          final tracksStock = prodRows.isEmpty || (prodRows.first['track_stock'] ?? 1) == 1;
+          if (tracksStock) {
+            await txn.rawUpdate(
+              'UPDATE products SET stock = stock + ? WHERE id = ?',
+              [item.baseStockQty, item.productId],
+            );
+          }
         }
       }
 
-      // Compute whether this completes a full return or partial return
-      final origItems = await txn.query(
-        'transaction_items',
-        where: 'transaction_id = ?',
-        whereArgs: [ret.transactionId],
-      );
-      final allRetItems = await txn.rawQuery('''
-        SELECT ri.product_id, ri.unit_name, SUM(ri.return_qty) as total_ret
-        FROM return_items ri
-        JOIN return_orders ro ON ri.return_order_id = ro.id
-        WHERE ro.transaction_id = ?
-        GROUP BY ri.product_id, ri.unit_name
-      ''', [ret.transactionId]);
-
-      final retMap = <String, double>{};
-      for (final r in allRetItems) {
-        retMap['${r['product_id']}_${r['unit_name']}'] =
-            (r['total_ret'] as num?)?.toDouble() ?? 0.0;
-      }
-
       bool allReturned = origItems.isNotEmpty;
-      for (final oi in origItems) {
-        final key = '${oi['product_id']}_${oi['unit_name']}';
-        final purchased = (oi['qty'] as num).toDouble();
-        final returned = retMap[key] ?? 0.0;
-        if (returned + 0.0001 < purchased) {
+      for (final entry in purchasedMap.entries) {
+        final returned = retMap[entry.key] ?? 0.0;
+        if (returned + 0.0001 < entry.value) {
           allReturned = false;
           break;
         }
@@ -1288,6 +1718,11 @@ class DatabaseHelper {
           'type': 'out',
           'category': 'Retur Penjualan',
           'amount': ret.totalRefund,
+          'payment_method': 'tunai',
+          'account_name': 'Laci Kasir',
+          'source_type': 'retur',
+          'source_id': ret.returnNumber,
+          'is_internal_transfer': 0,
           'note': 'Retur Nota #${ret.invoiceNumber}',
           'date': DateTime.now().toIso8601String(),
           'cashier_name': ret.cashierName,
@@ -1307,7 +1742,8 @@ class DatabaseHelper {
         );
         if (debts.isNotEmpty) {
           final d = CustomerDebtModel.fromMap(debts.first);
-          final newPaid = (d.paidDebt + ret.totalRefund).clamp(0.0, d.totalDebt);
+          final applied = ret.totalRefund.clamp(0.0, d.remainingDebt);
+          final newPaid = (d.paidDebt + applied).clamp(0.0, d.totalDebt);
           await txn.update(
             'customer_debts',
             {
@@ -1318,6 +1754,18 @@ class DatabaseHelper {
             where: 'id = ?',
             whereArgs: [d.id],
           );
+          if (applied > 0) {
+            await txn.insert('customer_debt_payments', {
+              'debt_id': d.id,
+              'customer_id': d.customerId,
+              'amount': applied,
+              'payment_method': 'retur',
+              'shift_id': shiftId,
+              'cashier_name': ret.cashierName,
+              'date': DateTime.now().toIso8601String(),
+              'note': 'Potong piutang dari Retur #${ret.returnNumber}',
+            });
+          }
         }
       }
 
@@ -1338,25 +1786,111 @@ class DatabaseHelper {
     return null;
   }
 
+  Future<List<ShiftModel>> getShiftHistory({int limit = 30}) async {
+    final db = await database;
+    final res = await db.query('shifts', orderBy: 'id DESC', limit: limit);
+    return res.map((e) => ShiftModel.fromMap(e)).toList();
+  }
+
   Future<int> openShift(ShiftModel shift) async {
     final db = await database;
-    return await db.insert('shifts', shift.toMap());
+    return await db.transaction((txn) async {
+      final existing = await txn.query(
+        'shifts',
+        where: "status = 'open'",
+        orderBy: 'id DESC',
+        limit: 1,
+      );
+      if (existing.isNotEmpty) {
+        final active = ShiftModel.fromMap(existing.first);
+        throw StateError(
+          'Masih ada shift terbuka atas nama "${active.cashierName}" (mulai ${active.startTime.toString().substring(0, 16)}). Tutup shift aktif terlebih dahulu sebelum membuka shift baru.',
+        );
+      }
+      if (shift.startingCash < 0) {
+        throw StateError('Modal awal shift tidak boleh negatif.');
+      }
+      return await txn.insert('shifts', shift.toMap());
+    });
   }
 
   Future<void> closeShift(int shiftId, double actualCash, double difference, String note) async {
     final db = await database;
-    await db.update(
-      'shifts',
-      {
-        'end_time': DateTime.now().toIso8601String(),
-        'actual_cash': actualCash,
-        'difference': difference,
-        'status': 'closed',
-        'note': note,
-      },
-      where: 'id = ?',
-      whereArgs: [shiftId],
-    );
+    await db.transaction((txn) async {
+      final rows = await txn.query('shifts', where: 'id = ?', whereArgs: [shiftId], limit: 1);
+      if (rows.isEmpty) {
+        throw StateError('Shift tidak ditemukan.');
+      }
+      final current = ShiftModel.fromMap(rows.first);
+      if (!current.isOpen) {
+        throw StateError('Shift ini sudah ditutup dan tidak dapat diubah kembali.');
+      }
+      final liveDiff = actualCash - current.expectedCash;
+      if (liveDiff.abs() > 0.01 && note.trim().isEmpty) {
+        throw StateError('Terdapat selisih kas sebesar Rp ${liveDiff.toInt()}. Keterangan wajib diisi.');
+      }
+      await txn.update(
+        'shifts',
+        {
+          'end_time': DateTime.now().toIso8601String(),
+          'actual_cash': actualCash,
+          'difference': liveDiff,
+          'status': 'closed',
+          'note': note.trim(),
+        },
+        where: 'id = ?',
+        whereArgs: [shiftId],
+      );
+    });
+  }
+
+  Future<void> adminCorrectShift({
+    required int shiftId,
+    required double newActualCash,
+    required String correctionNote,
+    required UserModel admin,
+  }) async {
+    if (!admin.hasPermission(AppPermissions.manageStoreSettings) && !admin.isOwner) {
+      throw StateError('Hanya Owner / Admin berwenang yang dapat melakukan koreksi shift.');
+    }
+    if (correctionNote.trim().isEmpty) {
+      throw StateError('Alasan koreksi shift wajib diisi.');
+    }
+    final db = await database;
+    await db.transaction((txn) async {
+      final rows = await txn.query('shifts', where: 'id = ?', whereArgs: [shiftId], limit: 1);
+      if (rows.isEmpty) throw StateError('Shift tidak ditemukan.');
+      final s = ShiftModel.fromMap(rows.first);
+      if (s.isOpen) throw StateError('Gunakan penutupan shift normal untuk shift yang masih aktif.');
+
+      final newDiff = newActualCash - s.expectedCash;
+      final beforeJson = 'actual=${s.actualCash ?? 0}, diff=${s.difference ?? 0}, note=${s.note}';
+      final afterJson = 'actual=$newActualCash, diff=$newDiff, note=${correctionNote.trim()}';
+
+      await txn.update(
+        'shifts',
+        {
+          'actual_cash': newActualCash,
+          'difference': newDiff,
+          'note': '${s.note} [KOREKSI ${admin.name}: ${correctionNote.trim()}]'.trim(),
+        },
+        where: 'id = ?',
+        whereArgs: [shiftId],
+      );
+
+      await txn.insert('audit_logs', {
+        'timestamp': DateTime.now().toIso8601String(),
+        'user_id': admin.id ?? 0,
+        'user_name': admin.name,
+        'user_role': admin.role,
+        'action_type': 'koreksi_shift',
+        'module': 'Kas & Shift',
+        'object_id': 'SHIFT-$shiftId',
+        'before_value': beforeJson,
+        'after_value': afterJson,
+        'details': 'Koreksi tutup shift #${s.id} (${s.cashierName}): ${correctionNote.trim()}',
+      });
+    });
   }
 
   Future<Map<String, dynamic>> getShiftStats(ShiftModel shift) async {
@@ -1364,11 +1898,17 @@ class DatabaseHelper {
     final startIso = shift.startTime.toIso8601String();
     final endIso = (shift.endTime ?? DateTime.now()).toIso8601String();
 
-    final txRows = await db.query(
-      'transactions',
-      where: "status != 'voided' AND date >= ? AND date <= ?",
-      whereArgs: [startIso, endIso],
-    );
+    final txRows = shift.id != null
+        ? await db.query(
+            'transactions',
+            where: "status != 'voided' AND (shift_id = ? OR (shift_id IS NULL AND date >= ? AND date <= ?))",
+            whereArgs: [shift.id, startIso, endIso],
+          )
+        : await db.query(
+            'transactions',
+            where: "status != 'voided' AND date >= ? AND date <= ?",
+            whereArgs: [startIso, endIso],
+          );
 
     double profit = 0.0;
     for (final map in txRows) {
@@ -1393,14 +1933,17 @@ class DatabaseHelper {
   Future<int> insertCashFlow(CashFlowModel flow) async {
     final db = await database;
     return await db.transaction((txn) async {
+      if (flow.isOut && flow.paymentMethod == 'tunai' && flow.accountName == 'Laci Kasir') {
+        await _ensureSufficientShiftCash(txn, flow.shiftId, flow.amount);
+      }
       final id = await txn.insert('cash_flows', flow.toMap());
-      if (flow.shiftId != null) {
+      if (flow.shiftId != null && flow.paymentMethod == 'tunai' && flow.accountName == 'Laci Kasir') {
         if (flow.isIn) {
           await txn.rawUpdate(
             'UPDATE shifts SET total_cash_in = total_cash_in + ? WHERE id = ?',
             [flow.amount, flow.shiftId],
           );
-        } else {
+        } else if (flow.isOut) {
           await txn.rawUpdate(
             'UPDATE shifts SET total_cash_out = total_cash_out + ? WHERE id = ?',
             [flow.amount, flow.shiftId],
@@ -1428,13 +1971,384 @@ class DatabaseHelper {
     return res.map((e) => CashFlowModel.fromMap(e)).toList();
   }
 
-  // ================= ATTENDANCE & AUDIT LOGS =================
-  Future<int> insertAttendance(AttendanceModel att) async {
+  /// Builds a unified, accurate cash-flow report & ledger for a date range,
+  /// distinguishing sales, shift starting cash, debt payments, purchases,
+  /// operational expenses, returns, and internal transfers (never double-counted).
+  Future<Map<String, dynamic>> getCashFlowReport(DateTime start, DateTime end) async {
     final db = await database;
-    return await db.insert('attendances', att.toMap());
+    final startBoundary = DateTime(start.year, start.month, start.day);
+    final endBoundary = DateTime(end.year, end.month, end.day, 23, 59, 59, 999);
+    final startIso = startBoundary.toIso8601String();
+    final endIso = endBoundary.toIso8601String();
+
+    // Opening cash balance prior to startBoundary (from shifts starting cash + cash sales + cash_in - cash_out - cash_returns)
+    final prevShiftStartRes = await db.rawQuery(
+      'SELECT COALESCE(SUM(starting_cash), 0) as s FROM shifts WHERE start_time < ?',
+      [startIso],
+    );
+    final prevSalesCashRes = await db.rawQuery(
+      "SELECT COALESCE(SUM(grand_total), 0) as s FROM transactions WHERE status != 'voided' AND payment_method = 'tunai' AND date < ?",
+      [startIso],
+    );
+    final prevCashInRes = await db.rawQuery(
+      "SELECT COALESCE(SUM(amount), 0) as s FROM cash_flows WHERE type = 'in' AND payment_method = 'tunai' AND date < ?",
+      [startIso],
+    );
+    final prevCashOutRes = await db.rawQuery(
+      "SELECT COALESCE(SUM(amount), 0) as s FROM cash_flows WHERE type = 'out' AND payment_method = 'tunai' AND date < ?",
+      [startIso],
+    );
+
+    final openingBalance = ((prevShiftStartRes.first['s'] as num?)?.toDouble() ?? 0.0) +
+        ((prevSalesCashRes.first['s'] as num?)?.toDouble() ?? 0.0) +
+        ((prevCashInRes.first['s'] as num?)?.toDouble() ?? 0.0) -
+        ((prevCashOutRes.first['s'] as num?)?.toDouble() ?? 0.0);
+
+    final entries = <Map<String, dynamic>>[];
+
+    // 1. Shift starting modal entries in range
+    final shiftsInRange = await db.query(
+      'shifts',
+      where: 'start_time >= ? AND start_time <= ?',
+      whereArgs: [startIso, endIso],
+    );
+    double totalShiftModal = 0.0;
+    for (final row in shiftsInRange) {
+      final s = ShiftModel.fromMap(row);
+      totalShiftModal += s.startingCash;
+      if (s.startingCash > 0) {
+        entries.add({
+          'date': s.startTime,
+          'type': 'in',
+          'category': 'Modal Awal Shift',
+          'amount': s.startingCash,
+          'paymentMethod': 'tunai',
+          'accountName': 'Laci Kasir',
+          'sourceType': 'shift_open',
+          'sourceId': 'SHIFT-${s.id}',
+          'cashierName': s.cashierName,
+          'note': 'Buka shift kasir (${s.cashierName})',
+          'isInternalTransfer': false,
+        });
+      }
+    }
+
+    // 2. Sales transactions in range (Tunai, QRIS, Transfer - excluding unpaid Kasbon)
+    final txInRange = await db.query(
+      'transactions',
+      where: "status != 'voided' AND date >= ? AND date <= ?",
+      whereArgs: [startIso, endIso],
+    );
+    double totalSalesCash = 0.0;
+    double totalSalesNonCash = 0.0;
+    for (final row in txInRange) {
+      final t = TransactionModel.fromMap(row);
+      if (t.paymentMethod == 'tunai') {
+        totalSalesCash += t.grandTotal;
+        entries.add({
+          'date': t.date,
+          'type': 'in',
+          'category': 'Penjualan Tunai',
+          'amount': t.grandTotal,
+          'paymentMethod': 'tunai',
+          'accountName': 'Laci Kasir',
+          'sourceType': 'penjualan',
+          'sourceId': t.invoiceNumber,
+          'cashierName': t.cashierName,
+          'note': 'Nota #${t.invoiceNumber} (${t.customerName})',
+          'isInternalTransfer': false,
+        });
+      } else if (t.paymentMethod == 'qris' || t.paymentMethod == 'transfer') {
+        totalSalesNonCash += t.grandTotal;
+        entries.add({
+          'date': t.date,
+          'type': 'in',
+          'category': 'Penjualan ${t.paymentMethod.toUpperCase()}',
+          'amount': t.grandTotal,
+          'paymentMethod': t.paymentMethod,
+          'accountName': t.paymentMethod == 'qris' ? 'QRIS' : 'Rekening Bank',
+          'sourceType': 'penjualan',
+          'sourceId': t.invoiceNumber,
+          'cashierName': t.cashierName,
+          'note': 'Nota #${t.invoiceNumber} (${t.customerName})',
+          'isInternalTransfer': false,
+        });
+      }
+    }
+
+    // 3. Explicit cash_flows entries in range
+    final cfRows = await db.query(
+      'cash_flows',
+      where: 'date >= ? AND date <= ?',
+      whereArgs: [startIso, endIso],
+    );
+    double totalDebtPayments = 0.0;
+    double totalOtherIn = 0.0;
+    double totalCashPurchases = 0.0;
+    double totalTransferPurchases = 0.0;
+    double totalSupplierPayments = 0.0;
+    double totalOpExpenses = 0.0;
+    double totalRefundOut = 0.0;
+    double totalInternalTransfers = 0.0;
+    double cashInDrawerRange = totalShiftModal + totalSalesCash;
+    double cashOutDrawerRange = 0.0;
+
+    for (final row in cfRows) {
+      final f = CashFlowModel.fromMap(row);
+      if (f.isInternalTransfer) {
+        totalInternalTransfers += f.amount;
+        if (f.accountName == 'Laci Kasir' && f.paymentMethod == 'tunai') {
+          if (f.isIn) cashInDrawerRange += f.amount;
+          if (f.isOut) cashOutDrawerRange += f.amount;
+        }
+      } else if (f.isIn) {
+        if (f.sourceType == 'kasbon_bayar' || f.category.toLowerCase().contains('kasbon')) {
+          totalDebtPayments += f.amount;
+        } else {
+          totalOtherIn += f.amount;
+        }
+        if (f.paymentMethod == 'tunai' && f.accountName == 'Laci Kasir') {
+          cashInDrawerRange += f.amount;
+        }
+      } else if (f.isOut) {
+        if (f.sourceType == 'pembelian' || f.category.toLowerCase().contains('pembelian')) {
+          if (f.paymentMethod == 'tunai') {
+            totalCashPurchases += f.amount;
+          } else {
+            totalTransferPurchases += f.amount;
+          }
+        } else if (f.sourceType == 'utang_supplier_bayar') {
+          totalSupplierPayments += f.amount;
+        } else if (f.sourceType == 'retur' || f.category.toLowerCase().contains('retur')) {
+          totalRefundOut += f.amount;
+        } else {
+          totalOpExpenses += f.amount;
+        }
+        if (f.paymentMethod == 'tunai' && f.accountName == 'Laci Kasir') {
+          cashOutDrawerRange += f.amount;
+        }
+      }
+
+      entries.add({
+        'date': f.date,
+        'type': f.type,
+        'category': f.category,
+        'amount': f.amount,
+        'paymentMethod': f.paymentMethod,
+        'accountName': f.accountName,
+        'sourceType': f.sourceType,
+        'sourceId': f.sourceId,
+        'cashierName': f.cashierName,
+        'note': f.note,
+        'isInternalTransfer': f.isInternalTransfer,
+      });
+    }
+
+    entries.sort((a, b) => (b['date'] as DateTime).compareTo(a['date'] as DateTime));
+
+    final totalOperationalIn = totalSalesCash + totalSalesNonCash + totalDebtPayments + totalOtherIn;
+    final totalOperationalOut =
+        totalCashPurchases + totalTransferPurchases + totalSupplierPayments + totalOpExpenses + totalRefundOut;
+    final endingCashBalance = openingBalance + cashInDrawerRange - cashOutDrawerRange;
+
+    return {
+      'openingBalance': openingBalance,
+      'endingCashBalance': endingCashBalance,
+      'totalShiftModal': totalShiftModal,
+      'totalSalesCash': totalSalesCash,
+      'totalSalesNonCash': totalSalesNonCash,
+      'totalDebtPayments': totalDebtPayments,
+      'totalOtherIn': totalOtherIn,
+      'totalCashPurchases': totalCashPurchases,
+      'totalTransferPurchases': totalTransferPurchases,
+      'totalSupplierPayments': totalSupplierPayments,
+      'totalOpExpenses': totalOpExpenses,
+      'totalRefundOut': totalRefundOut,
+      'totalInternalTransfers': totalInternalTransfers,
+      'totalOperationalIn': totalOperationalIn,
+      'totalOperationalOut': totalOperationalOut,
+      'entries': entries,
+    };
   }
 
-  Future<List<AttendanceModel>> getRecentAttendances({int limit = 100}) async {
+  // ================= ATTENDANCE & AUDIT LOGS =================
+  Future<AttendanceModel?> getLatestAttendanceForEmployee(int employeeId) async {
+    final db = await database;
+    final rows = await db.query(
+      'attendances',
+      where: 'employee_id = ?',
+      whereArgs: [employeeId],
+      orderBy: 'timestamp DESC, id DESC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return AttendanceModel.fromMap(rows.first);
+  }
+
+  Future<List<AttendanceModel>> getAttendancesTodayForEmployee(int employeeId, DateTime refDate) async {
+    final db = await database;
+    final start = DateTime(refDate.year, refDate.month, refDate.day).toIso8601String();
+    final end = DateTime(refDate.year, refDate.month, refDate.day, 23, 59, 59, 999).toIso8601String();
+    final rows = await db.query(
+      'attendances',
+      where: 'employee_id = ? AND timestamp >= ? AND timestamp <= ?',
+      whereArgs: [employeeId, start, end],
+      orderBy: 'timestamp ASC, id ASC',
+    );
+    return rows.map((e) => AttendanceModel.fromMap(e)).toList();
+  }
+
+  Future<DateTime?> getMaxSystemActivityTimestamp() async {
+    final db = await database;
+    final dates = <DateTime>[];
+    for (final q in [
+      'SELECT MAX(timestamp) as dt FROM attendances',
+      'SELECT MAX(date) as dt FROM transactions',
+      'SELECT MAX(timestamp) as dt FROM audit_logs',
+    ]) {
+      final r = await db.rawQuery(q);
+      final raw = r.first['dt']?.toString();
+      if (raw != null && raw.isNotEmpty) {
+        final parsed = DateTime.tryParse(raw);
+        if (parsed != null) dates.add(parsed);
+      }
+    }
+    if (dates.isEmpty) return null;
+    dates.sort();
+    return dates.last;
+  }
+
+  Future<int> insertAttendance(AttendanceModel att) async {
+    final db = await database;
+    return await db.transaction((txn) async {
+      // 1. Device clock anti-tampering check
+      final maxRows = await txn.rawQuery('''
+        SELECT MAX(dt) as max_dt FROM (
+          SELECT MAX(timestamp) as dt FROM attendances
+          UNION ALL
+          SELECT MAX(date) as dt FROM transactions
+          UNION ALL
+          SELECT MAX(timestamp) as dt FROM audit_logs
+        )
+      ''');
+      final maxRaw = maxRows.first['max_dt']?.toString();
+      if (maxRaw != null && maxRaw.isNotEmpty) {
+        final latestSystemTime = DateTime.tryParse(maxRaw);
+        if (latestSystemTime != null &&
+            att.timestamp.isBefore(latestSystemTime.subtract(const Duration(minutes: 2)))) {
+          throw StateError(
+            'Waktu perangkat terdeteksi mundur dari aktivitas terakhir di database. Sinkronkan jam perangkat sebelum absensi.',
+          );
+        }
+      }
+
+      // 2. Anti-replay challenge token check (prevent duplicate submission with same token by employee)
+      final dupToken = await txn.query(
+        'attendances',
+        where: 'employee_id = ? AND challenge_code = ? AND timestamp >= ?',
+        whereArgs: [
+          att.employeeId,
+          att.challengeCode,
+          DateTime(att.timestamp.year, att.timestamp.month, att.timestamp.day).toIso8601String(),
+        ],
+        limit: 1,
+      );
+      if (dupToken.isNotEmpty && att.challengeCode != 'ADMIN-CORRECTION') {
+        throw StateError('Token tantangan sudah digunakan (cegah duplikasi / replay). Muat ulang kamera.');
+      }
+
+      // 3. Strict session sequence check on same work day
+      final dayStart = DateTime(att.timestamp.year, att.timestamp.month, att.timestamp.day).toIso8601String();
+      final dayEnd =
+          DateTime(att.timestamp.year, att.timestamp.month, att.timestamp.day, 23, 59, 59, 999).toIso8601String();
+      final todayRows = await txn.query(
+        'attendances',
+        where: 'employee_id = ? AND timestamp >= ? AND timestamp <= ?',
+        whereArgs: [att.employeeId, dayStart, dayEnd],
+        orderBy: 'timestamp DESC, id DESC',
+      );
+
+      final hasCheckedInToday = todayRows.any((r) => r['type'] == 'masuk');
+      final hasCheckedOutToday = todayRows.any((r) => r['type'] == 'pulang');
+
+      if (att.type == 'masuk') {
+        if (hasCheckedInToday) {
+          final prev = AttendanceModel.fromMap(
+            todayRows.firstWhere((r) => r['type'] == 'masuk'),
+          );
+          final hhmm =
+              '${prev.timestamp.hour.toString().padLeft(2, '0')}:${prev.timestamp.minute.toString().padLeft(2, '0')}';
+          throw StateError(
+            'Anda sudah melakukan absensi MASUK hari ini pada pukul $hhmm. Tidak dapat absen masuk dua kali.',
+          );
+        }
+      } else if (att.type == 'pulang') {
+        if (!hasCheckedInToday) {
+          throw StateError('Anda belum melakukan absensi MASUK hari ini. Lakukan absensi masuk terlebih dahulu.');
+        }
+        if (hasCheckedOutToday) {
+          final prevOut = AttendanceModel.fromMap(
+            todayRows.firstWhere((r) => r['type'] == 'pulang'),
+          );
+          final hhmm =
+              '${prevOut.timestamp.hour.toString().padLeft(2, '0')}:${prevOut.timestamp.minute.toString().padLeft(2, '0')}';
+          throw StateError(
+            'Anda sudah melakukan absensi PULANG hari ini pada pukul $hhmm. Tidak dapat absen pulang dua kali.',
+          );
+        }
+      }
+
+      return await txn.insert('attendances', att.toMap());
+    });
+  }
+
+  Future<void> correctAttendanceByAdmin({
+    required int attendanceId,
+    required String newStatus,
+    required int newLateMinutes,
+    required String correctionNote,
+    required UserModel admin,
+  }) async {
+    if (!admin.hasPermission(AppPermissions.manageEmployees) && !admin.isOwner) {
+      throw StateError('Hanya Admin / Owner yang berwenang melakukan koreksi absensi.');
+    }
+    if (correctionNote.trim().isEmpty) {
+      throw StateError('Alasan koreksi wajib diisi.');
+    }
+    final db = await database;
+    await db.transaction((txn) async {
+      final rows = await txn.query('attendances', where: 'id = ?', whereArgs: [attendanceId], limit: 1);
+      if (rows.isEmpty) throw StateError('Data absensi tidak ditemukan.');
+      final oldAtt = AttendanceModel.fromMap(rows.first);
+
+      await txn.update(
+        'attendances',
+        {
+          'status': newStatus,
+          'late_minutes': newLateMinutes,
+          'is_corrected': 1,
+          'correction_note': '${correctionNote.trim()} (oleh ${admin.name})',
+        },
+        where: 'id = ?',
+        whereArgs: [attendanceId],
+      );
+
+      await txn.insert('audit_logs', {
+        'timestamp': DateTime.now().toIso8601String(),
+        'user_id': admin.id ?? 0,
+        'user_name': admin.name,
+        'user_role': admin.role,
+        'action_type': 'koreksi_absensi',
+        'module': 'Absensi',
+        'object_id': 'ATT-$attendanceId',
+        'before_value': 'status=${oldAtt.status}, lateMinutes=${oldAtt.lateMinutes}',
+        'after_value': 'status=$newStatus, lateMinutes=$newLateMinutes',
+        'details': 'Koreksi absensi ${oldAtt.employeeName} (${oldAtt.type}): ${correctionNote.trim()}',
+      });
+    });
+  }
+
+  Future<List<AttendanceModel>> getRecentAttendances({int limit = 150}) async {
     final db = await database;
     final res = await db.query('attendances', orderBy: 'timestamp DESC', limit: limit);
     return res.map((e) => AttendanceModel.fromMap(e)).toList();
@@ -1451,6 +2365,51 @@ class DatabaseHelper {
     return res.map((e) => AuditLogModel.fromMap(e)).toList();
   }
 
+  Future<List<AuditLogModel>> getAuditLogsFiltered({
+    DateTime? start,
+    DateTime? end,
+    int? userId,
+    String? actionType,
+    String? searchQuery,
+    int limit = 30,
+    int offset = 0,
+  }) async {
+    final db = await database;
+    final whereParts = <String>[];
+    final whereArgs = <dynamic>[];
+
+    if (start != null && end != null) {
+      whereParts.add('timestamp >= ? AND timestamp <= ?');
+      whereArgs.addAll([
+        DateTime(start.year, start.month, start.day).toIso8601String(),
+        DateTime(end.year, end.month, end.day, 23, 59, 59, 999).toIso8601String(),
+      ]);
+    }
+    if (userId != null) {
+      whereParts.add('user_id = ?');
+      whereArgs.add(userId);
+    }
+    if (actionType != null && actionType.isNotEmpty && actionType != 'semua') {
+      whereParts.add('action_type = ?');
+      whereArgs.add(actionType);
+    }
+    if (searchQuery != null && searchQuery.trim().isNotEmpty) {
+      final q = '%${searchQuery.trim()}%';
+      whereParts.add('(module LIKE ? OR details LIKE ? OR user_name LIKE ? OR object_id LIKE ?)');
+      whereArgs.addAll([q, q, q, q]);
+    }
+
+    final res = await db.query(
+      'audit_logs',
+      where: whereParts.isEmpty ? null : whereParts.join(' AND '),
+      whereArgs: whereParts.isEmpty ? null : whereArgs,
+      orderBy: 'timestamp DESC, id DESC',
+      limit: limit,
+      offset: offset,
+    );
+    return res.map((e) => AuditLogModel.fromMap(e)).toList();
+  }
+
   // ================= CUSTOMER DEBTS (KASBON) =================
   Future<List<CustomerDebtModel>> getCustomerDebts() async {
     final db = await database;
@@ -1458,11 +2417,53 @@ class DatabaseHelper {
     return res.map((e) => CustomerDebtModel.fromMap(e)).toList();
   }
 
+  Future<List<CustomerDebtPaymentModel>> getCustomerDebtPayments(int debtId) async {
+    final db = await database;
+    final res = await db.query(
+      'customer_debt_payments',
+      where: 'debt_id = ?',
+      whereArgs: [debtId],
+      orderBy: 'date DESC',
+    );
+    return res.map((e) => CustomerDebtPaymentModel.fromMap(e)).toList();
+  }
+
+  Future<double> getCustomerOutstandingDebt(int customerId, String customerName) async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT COALESCE(SUM(MAX(0, total_debt - paid_debt)), 0) as rem
+      FROM customer_debts
+      WHERE customer_id = ? OR (customer_id IS NULL AND LOWER(customer_name) = LOWER(?))
+    ''', [customerId, customerName]);
+    return (rows.first['rem'] as num?)?.toDouble() ?? 0.0;
+  }
+
+  Future<List<TransactionModel>> getCustomerPurchaseHistory(int customerId, String customerName) async {
+    final db = await database;
+    final rows = await db.query(
+      'transactions',
+      where: "(customer_id = ? OR (customer_id IS NULL AND LOWER(customer_name) = LOWER(?))) AND status != 'voided'",
+      whereArgs: [customerId, customerName],
+      orderBy: 'date DESC',
+      limit: 50,
+    );
+    final list = <TransactionModel>[];
+    for (final m in rows) {
+      final t = TransactionModel.fromMap(m);
+      final items = await db.query('transaction_items', where: 'transaction_id = ?', whereArgs: [t.id]);
+      t.items = items.map((e) => TransactionItemModel.fromMap(e)).toList();
+      list.add(t);
+    }
+    return list;
+  }
+
   Future<void> payCustomerDebt(
     int debtId,
     double amountPaid, {
+    String paymentMethod = 'tunai',
     int? shiftId,
     String cashierName = 'Kasir',
+    String note = '',
   }) async {
     final db = await database;
     await db.transaction((txn) async {
@@ -1470,30 +2471,56 @@ class DatabaseHelper {
       if (debtRes.isEmpty) return;
 
       final debt = CustomerDebtModel.fromMap(debtRes.first);
+      if (debt.remainingDebt <= 0) {
+        throw StateError('Kasbon ini sudah lunas.');
+      }
       final actualPayment = amountPaid > debt.remainingDebt ? debt.remainingDebt : amountPaid;
+      if (actualPayment <= 0) {
+        throw StateError('Nominal pembayaran harus lebih dari Rp 0.');
+      }
+      if (paymentMethod == 'tunai' && shiftId == null) {
+        throw StateError('Buka shift kasir terlebih dahulu untuk menerima pembayaran kasbon tunai.');
+      }
       final newPaid = debt.paidDebt + actualPayment;
+      final nowIso = DateTime.now().toIso8601String();
 
       await txn.update(
         'customer_debts',
         {
           'paid_debt': newPaid,
-          'last_payment_date': DateTime.now().toIso8601String(),
+          'last_payment_date': nowIso,
         },
         where: 'id = ?',
         whereArgs: [debtId],
       );
 
-      await txn.insert('cash_flows', {
+      await txn.insert('customer_debt_payments', {
+        'debt_id': debtId,
+        'customer_id': debt.customerId,
+        'amount': actualPayment,
+        'payment_method': paymentMethod,
         'shift_id': shiftId,
+        'cashier_name': cashierName,
+        'date': nowIso,
+        'note': note.isNotEmpty ? note : 'Cicilan / Pelunasan #${debt.invoiceNumber}',
+      });
+
+      await txn.insert('cash_flows', {
+        'shift_id': paymentMethod == 'tunai' ? shiftId : null,
         'type': 'in',
         'category': 'Pelunasan Kasbon',
         'amount': actualPayment,
+        'payment_method': paymentMethod,
+        'account_name': paymentMethod == 'tunai' ? 'Laci Kasir' : (paymentMethod == 'qris' ? 'QRIS' : 'Rekening Bank'),
+        'source_type': 'kasbon_bayar',
+        'source_id': debt.invoiceNumber,
+        'is_internal_transfer': 0,
         'note': 'Pelunasan dari ${debt.customerName} (#${debt.invoiceNumber})',
-        'date': DateTime.now().toIso8601String(),
+        'date': nowIso,
         'cashier_name': cashierName,
       });
 
-      if (shiftId != null) {
+      if (shiftId != null && paymentMethod == 'tunai') {
         await txn.rawUpdate(
           'UPDATE shifts SET total_cash_in = total_cash_in + ? WHERE id = ?',
           [actualPayment, shiftId],
@@ -1533,7 +2560,7 @@ class DatabaseHelper {
     await db.delete('customers', where: 'id = ?', whereArgs: [id]);
   }
 
-  // ================= PURCHASES (RESTOCK / PEMBELIAN) =================
+  // ================= PURCHASES (RESTOCK / PEMBELIAN) & SUPPLIER DEBTS =================
   Future<List<PurchaseModel>> getPurchases({int limit = 100}) async {
     final db = await database;
     final res = await db.query('purchases', orderBy: 'date DESC', limit: limit);
@@ -1550,6 +2577,14 @@ class DatabaseHelper {
         date: p.date,
         totalAmount: p.totalAmount,
         paymentMethod: p.paymentMethod,
+        cashPaid: p.cashPaid,
+        transferPaid: p.transferPaid,
+        creditAmount: p.creditAmount,
+        transferAccount: p.transferAccount,
+        transferRef: p.transferRef,
+        dueDate: p.dueDate,
+        status: p.status,
+        shiftId: p.shiftId,
         note: p.note,
         createdBy: p.createdBy,
         items: items,
@@ -1564,8 +2599,25 @@ class DatabaseHelper {
     bool updateProductCostPrice = true,
   }) async {
     final db = await database;
+    final targetShiftId = shiftId ?? purchase.shiftId;
     return await db.transaction((txn) async {
-      final pid = await txn.insert('purchases', purchase.toMap());
+      final paidSum = purchase.cashPaid + purchase.transferPaid + purchase.creditAmount;
+      if ((paidSum - purchase.totalAmount).abs() > 0.01) {
+        throw StateError(
+          'Total komponen pembayaran (Tunai + Transfer + Kredit) tidak sama dengan total pembelian.',
+        );
+      }
+      if (purchase.cashPaid > 0) {
+        await _ensureSufficientShiftCash(txn, targetShiftId, purchase.cashPaid);
+      }
+      if (purchase.transferPaid > 0 && purchase.transferAccount.trim().isEmpty) {
+        throw StateError('Pilih atau isi rekening pembayaran untuk komponen transfer.');
+      }
+
+      final pMap = purchase.toMap();
+      if (targetShiftId != null) pMap['shift_id'] = targetShiftId;
+      final pid = await txn.insert('purchases', pMap);
+
       for (final item in purchase.items) {
         await txn.insert('purchase_items', {
           'purchase_id': pid,
@@ -1594,24 +2646,224 @@ class DatabaseHelper {
         }
       }
 
-      if (purchase.paymentMethod == 'kas_laci') {
+      if (purchase.cashPaid > 0) {
         await txn.insert('cash_flows', {
-          'shift_id': shiftId,
+          'shift_id': targetShiftId,
           'type': 'out',
-          'category': 'Pembelian Stok',
-          'amount': purchase.totalAmount,
+          'category': 'Pembelian Stok Tunai',
+          'amount': purchase.cashPaid,
+          'payment_method': 'tunai',
+          'account_name': 'Laci Kasir',
+          'source_type': 'pembelian',
+          'source_id': purchase.purchaseNumber,
+          'is_internal_transfer': 0,
           'note': 'Pembelian #${purchase.purchaseNumber} (${purchase.supplierName})',
           'date': purchase.date.toIso8601String(),
           'cashier_name': purchase.createdBy,
         });
-        if (shiftId != null) {
+        await txn.rawUpdate(
+          'UPDATE shifts SET total_cash_out = total_cash_out + ? WHERE id = ?',
+          [purchase.cashPaid, targetShiftId],
+        );
+      }
+
+      if (purchase.transferPaid > 0) {
+        await txn.insert('cash_flows', {
+          'shift_id': null,
+          'type': 'out',
+          'category': 'Pembelian Stok Transfer',
+          'amount': purchase.transferPaid,
+          'payment_method': 'transfer',
+          'account_name': purchase.transferAccount.isNotEmpty ? purchase.transferAccount : 'Rekening Bank',
+          'source_type': 'pembelian',
+          'source_id': purchase.purchaseNumber,
+          'is_internal_transfer': 0,
+          'note':
+              'Transfer ke ${purchase.supplierName} (#${purchase.purchaseNumber}) Ref: ${purchase.transferRef.isEmpty ? "-" : purchase.transferRef}',
+          'date': purchase.date.toIso8601String(),
+          'cashier_name': purchase.createdBy,
+        });
+      }
+
+      if (purchase.creditAmount > 0) {
+        await txn.insert('supplier_debts', {
+          'purchase_id': pid,
+          'purchase_number': purchase.purchaseNumber,
+          'supplier_name': purchase.supplierName,
+          'supplier_phone': purchase.supplierPhone,
+          'total_debt': purchase.creditAmount,
+          'paid_debt': 0.0,
+          'purchase_date': purchase.date.toIso8601String(),
+          'due_date': (purchase.dueDate ?? purchase.date.add(const Duration(days: 30))).toIso8601String(),
+          'status': 'belum_lunas',
+          'note': purchase.note,
+        });
+      }
+
+      return pid;
+    });
+  }
+
+  Future<void> voidPurchase(int purchaseId, {int? shiftId, String cancelledBy = 'Admin'}) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      final rows = await txn.query('purchases', where: 'id = ?', whereArgs: [purchaseId], limit: 1);
+      if (rows.isEmpty) return;
+      final p = PurchaseModel.fromMap(rows.first);
+      if (p.isVoided) return;
+
+      final itemRows = await txn.query('purchase_items', where: 'purchase_id = ?', whereArgs: [purchaseId]);
+      for (final m in itemRows) {
+        final item = PurchaseItemModel.fromMap(m);
+        await txn.rawUpdate(
+          'UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?',
+          [item.baseStockQty, item.productId],
+        );
+      }
+
+      final targetShiftId = shiftId ?? p.shiftId;
+      final nowIso = DateTime.now().toIso8601String();
+
+      if (p.cashPaid > 0) {
+        await txn.insert('cash_flows', {
+          'shift_id': targetShiftId,
+          'type': 'in',
+          'category': 'Pembalikan Pembelian Batal',
+          'amount': p.cashPaid,
+          'payment_method': 'tunai',
+          'account_name': 'Laci Kasir',
+          'source_type': 'pembelian',
+          'source_id': p.purchaseNumber,
+          'is_internal_transfer': 0,
+          'note': 'Batal Pembelian #${p.purchaseNumber} (${p.supplierName})',
+          'date': nowIso,
+          'cashier_name': cancelledBy,
+        });
+        if (targetShiftId != null) {
           await txn.rawUpdate(
-            'UPDATE shifts SET total_cash_out = total_cash_out + ? WHERE id = ?',
-            [purchase.totalAmount, shiftId],
+            'UPDATE shifts SET total_cash_in = total_cash_in + ? WHERE id = ?',
+            [p.cashPaid, targetShiftId],
           );
         }
       }
-      return pid;
+      if (p.transferPaid > 0) {
+        await txn.insert('cash_flows', {
+          'shift_id': null,
+          'type': 'in',
+          'category': 'Pembalikan Transfer Pembelian Batal',
+          'amount': p.transferPaid,
+          'payment_method': 'transfer',
+          'account_name': p.transferAccount.isNotEmpty ? p.transferAccount : 'Rekening Bank',
+          'source_type': 'pembelian',
+          'source_id': p.purchaseNumber,
+          'is_internal_transfer': 0,
+          'note': 'Pengembalian Transfer Batal #${p.purchaseNumber}',
+          'date': nowIso,
+          'cashier_name': cancelledBy,
+        });
+      }
+
+      await txn.update(
+        'supplier_debts',
+        {'status': 'dibatalkan', 'note': 'Pembelian dibatalkan oleh $cancelledBy'},
+        where: 'purchase_id = ?',
+        whereArgs: [purchaseId],
+      );
+      await txn.update('purchases', {'status': 'voided'}, where: 'id = ?', whereArgs: [purchaseId]);
+    });
+  }
+
+  Future<List<SupplierDebtModel>> getSupplierDebts() async {
+    final db = await database;
+    final res = await db.query('supplier_debts', orderBy: 'purchase_date DESC');
+    return res.map((e) => SupplierDebtModel.fromMap(e)).toList();
+  }
+
+  Future<List<SupplierDebtPaymentModel>> getSupplierDebtPayments(int supplierDebtId) async {
+    final db = await database;
+    final res = await db.query(
+      'supplier_debt_payments',
+      where: 'supplier_debt_id = ?',
+      whereArgs: [supplierDebtId],
+      orderBy: 'date DESC',
+    );
+    return res.map((e) => SupplierDebtPaymentModel.fromMap(e)).toList();
+  }
+
+  Future<void> paySupplierDebt({
+    required int supplierDebtId,
+    required double amount,
+    required String paymentSource, // 'kas_laci' | 'transfer'
+    String accountName = 'Laci Kasir',
+    String referenceNumber = '',
+    int? shiftId,
+    String paidBy = 'Admin',
+    String note = '',
+  }) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      final rows = await txn.query('supplier_debts', where: 'id = ?', whereArgs: [supplierDebtId], limit: 1);
+      if (rows.isEmpty) throw StateError('Data utang supplier tidak ditemukan.');
+      final debt = SupplierDebtModel.fromMap(rows.first);
+      if (debt.isCancelled) throw StateError('Utang supplier ini berasal dari pembelian yang dibatalkan.');
+      if (debt.isPaidOff) throw StateError('Utang supplier ini sudah lunas.');
+
+      final actualPay = amount > debt.remainingDebt ? debt.remainingDebt : amount;
+      if (actualPay <= 0) throw StateError('Nominal pembayaran harus lebih dari Rp 0.');
+
+      if (paymentSource == 'kas_laci') {
+        await _ensureSufficientShiftCash(txn, shiftId, actualPay);
+      }
+
+      final newPaid = debt.paidDebt + actualPay;
+      final newStatus = (debt.totalDebt - newPaid) <= 0.001 ? 'lunas' : 'cicilan';
+      final nowIso = DateTime.now().toIso8601String();
+
+      await txn.update(
+        'supplier_debts',
+        {
+          'paid_debt': newPaid,
+          'last_payment_date': nowIso,
+          'status': newStatus,
+        },
+        where: 'id = ?',
+        whereArgs: [supplierDebtId],
+      );
+
+      await txn.insert('supplier_debt_payments', {
+        'supplier_debt_id': supplierDebtId,
+        'amount': actualPay,
+        'payment_source': paymentSource,
+        'account_name': paymentSource == 'kas_laci' ? 'Laci Kasir' : accountName,
+        'reference_number': referenceNumber,
+        'shift_id': paymentSource == 'kas_laci' ? shiftId : null,
+        'paid_by': paidBy,
+        'date': nowIso,
+        'note': note,
+      });
+
+      await txn.insert('cash_flows', {
+        'shift_id': paymentSource == 'kas_laci' ? shiftId : null,
+        'type': 'out',
+        'category': 'Pembayaran Utang Supplier',
+        'amount': actualPay,
+        'payment_method': paymentSource == 'kas_laci' ? 'tunai' : 'transfer',
+        'account_name': paymentSource == 'kas_laci' ? 'Laci Kasir' : accountName,
+        'source_type': 'utang_supplier_bayar',
+        'source_id': debt.purchaseNumber,
+        'is_internal_transfer': 0,
+        'note':
+            'Bayar utang ${debt.supplierName} (#${debt.purchaseNumber})${referenceNumber.isNotEmpty ? " Ref: $referenceNumber" : ""}',
+        'date': nowIso,
+        'cashier_name': paidBy,
+      });
+
+      if (paymentSource == 'kas_laci' && shiftId != null) {
+        await txn.rawUpdate(
+          'UPDATE shifts SET total_cash_out = total_cash_out + ? WHERE id = ?',
+          [actualPay, shiftId],
+        );
+      }
     });
   }
 
@@ -1648,16 +2900,50 @@ class DatabaseHelper {
   }
 
   Future<int> insertStockOpname(StockOpnameModel opname) async {
+    final ids = await insertStockOpnamesBatch([opname]);
+    return ids.first;
+  }
+
+  Future<List<int>> insertStockOpnamesBatch(List<StockOpnameModel> entries) async {
+    if (entries.isEmpty) return [];
     final db = await database;
     return await db.transaction((txn) async {
-      final id = await txn.insert('stock_opnames', opname.toMap());
-      await txn.update(
-        'products',
-        {'stock': opname.physicalStock},
-        where: 'id = ?',
-        whereArgs: [opname.productId],
-      );
-      return id;
+      final seenProductIds = <int>{};
+      final insertedIds = <int>[];
+
+      for (final entry in entries) {
+        if (!seenProductIds.add(entry.productId)) {
+          throw StateError('Duplikasi produk "${entry.productName}" dalam satu sesi stock opname dicegah.');
+        }
+        final prodRows = await txn.query('products', where: 'id = ?', whereArgs: [entry.productId], limit: 1);
+        if (prodRows.isEmpty) {
+          throw StateError('Produk "${entry.productName}" tidak ditemukan.');
+        }
+        final freshSystemStock = (prodRows.first['stock'] as num?)?.toDouble() ?? 0.0;
+        final diff = entry.physicalStock - freshSystemStock;
+
+        final synced = StockOpnameModel(
+          date: entry.date,
+          productId: entry.productId,
+          productCode: entry.productCode,
+          productName: entry.productName,
+          systemStock: freshSystemStock,
+          physicalStock: entry.physicalStock,
+          difference: diff,
+          note: entry.note,
+          auditedBy: entry.auditedBy,
+        );
+
+        final id = await txn.insert('stock_opnames', synced.toMap());
+        insertedIds.add(id);
+        await txn.update(
+          'products',
+          {'stock': entry.physicalStock},
+          where: 'id = ?',
+          whereArgs: [entry.productId],
+        );
+      }
+      return insertedIds;
     });
   }
 
@@ -2130,6 +3416,282 @@ class DatabaseHelper {
       'recentOpnames': recentOpnames.map((e) => StockOpnameModel.fromMap(e)).toList(),
       'recentCashFlows': recentFlows.map((e) => CashFlowModel.fromMap(e)).toList(),
       'recentAudits': recentAudits.map((e) => AuditLogModel.fromMap(e)).toList(),
+    };
+  }
+
+  /// Actual SQLite-backed business intelligence report across Sales, Products,
+  /// Customers, Suppliers, and Profit for any selected date range.
+  Future<Map<String, dynamic>> getBusinessAnalyticsReport(DateTime start, DateTime end) async {
+    final db = await database;
+    final startIso = DateTime(start.year, start.month, start.day).toIso8601String();
+    final endIso = DateTime(end.year, end.month, end.day, 23, 59, 59, 999).toIso8601String();
+
+    final txRows = await db.query(
+      'transactions',
+      where: 'date >= ? AND date <= ?',
+      whereArgs: [startIso, endIso],
+      orderBy: 'date DESC',
+    );
+
+    final validTx = <TransactionModel>[];
+    double grossSales = 0.0;
+    double totalDiscount = 0.0;
+    double cashSales = 0.0;
+    double transferSales = 0.0;
+    double qrisSales = 0.0;
+    double kasbonSales = 0.0;
+    double totalItemsSold = 0.0;
+    double totalHpp = 0.0;
+
+    final productStats = <int, Map<String, dynamic>>{};
+    final categoryStats = <String, Map<String, dynamic>>{};
+    final customerStats = <String, Map<String, dynamic>>{};
+    final dailyTrend = <String, double>{};
+
+    // Load active products map for category + zero-sales detection + low stock
+    final allProdRows = await db.query('products', where: 'is_active = 1');
+    final prodById = <int, ProductModel>{};
+    for (final pm in allProdRows) {
+      final p = ProductModel.fromMap(pm);
+      if (p.id != null) prodById[p.id!] = p;
+    }
+
+    for (final row in txRows) {
+      final t = TransactionModel.fromMap(row);
+      final itemRows = await db.query('transaction_items', where: 'transaction_id = ?', whereArgs: [t.id]);
+      t.items = itemRows.map((e) => TransactionItemModel.fromMap(e)).toList();
+
+      if (t.status == 'voided' || t.status == 'void') continue;
+      validTx.add(t);
+
+      grossSales += t.grandTotal;
+      totalDiscount += t.discountTotal;
+
+      final dayKey = '${t.date.year}-${t.date.month.toString().padLeft(2, '0')}-${t.date.day.toString().padLeft(2, '0')}';
+      dailyTrend[dayKey] = (dailyTrend[dayKey] ?? 0.0) + t.grandTotal;
+
+      switch (t.paymentMethod) {
+        case 'tunai':
+          cashSales += t.grandTotal;
+          break;
+        case 'transfer':
+          transferSales += t.grandTotal;
+          break;
+        case 'qris':
+          qrisSales += t.grandTotal;
+          break;
+        case 'kasbon':
+          kasbonSales += t.grandTotal;
+          break;
+      }
+
+      // Customer breakdown
+      final custKey = t.customerId != null ? 'ID:${t.customerId}' : 'NAME:${t.customerName.toLowerCase()}';
+      final cEntry = customerStats.putIfAbsent(custKey, () => {
+            'customerId': t.customerId,
+            'name': t.customerName,
+            'phone': t.customerPhone,
+            'freq': 0,
+            'totalSpent': 0.0,
+            'maxTrx': 0.0,
+          });
+      cEntry['freq'] = (cEntry['freq'] as int) + 1;
+      cEntry['totalSpent'] = (cEntry['totalSpent'] as double) + t.grandTotal;
+      if (t.grandTotal > (cEntry['maxTrx'] as double)) {
+        cEntry['maxTrx'] = t.grandTotal;
+      }
+
+      for (final item in t.items) {
+        totalItemsSold += item.qty;
+        final itemHpp = item.isService ? 0.0 : (item.costPrice * item.conversionFactor * item.qty);
+        totalHpp += itemHpp;
+        final itemProfit = item.isService ? item.subtotal : (item.subtotal - itemHpp);
+
+        final baseUnits = item.isService ? item.qty : (item.qty * item.conversionFactor);
+        final pMeta = prodById[item.productId];
+        final category = pMeta?.category ?? 'Umum';
+
+        final pEntry = productStats.putIfAbsent(item.productId, () => {
+              'productId': item.productId,
+              'code': item.productCode,
+              'name': item.productName,
+              'category': category,
+              'qtySold': 0.0,
+              'revenue': 0.0,
+              'hpp': 0.0,
+              'profit': 0.0,
+              'stock': pMeta?.stock ?? 0.0,
+              'unit': pMeta?.baseUnit ?? item.unitName,
+            });
+        pEntry['qtySold'] = (pEntry['qtySold'] as double) + baseUnits;
+        pEntry['revenue'] = (pEntry['revenue'] as double) + item.subtotal;
+        pEntry['hpp'] = (pEntry['hpp'] as double) + itemHpp;
+        pEntry['profit'] = (pEntry['profit'] as double) + itemProfit;
+
+        final catEntry = categoryStats.putIfAbsent(category, () => {
+              'category': category,
+              'qtySold': 0.0,
+              'revenue': 0.0,
+              'profit': 0.0,
+            });
+        catEntry['qtySold'] = (catEntry['qtySold'] as double) + baseUnits;
+        catEntry['revenue'] = (catEntry['revenue'] as double) + item.subtotal;
+        catEntry['profit'] = (catEntry['profit'] as double) + itemProfit;
+      }
+    }
+
+    // Actual returns in period
+    final returnRows = await db.query(
+      'return_orders',
+      where: 'date >= ? AND date <= ?',
+      whereArgs: [startIso, endIso],
+    );
+    double totalReturn = 0.0;
+    for (final rr in returnRows) {
+      totalReturn += (rr['total_refund'] as num?)?.toDouble() ?? 0.0;
+    }
+
+    final netSales = (grossSales - totalReturn).clamp(0.0, double.infinity);
+    final grossProfit = netSales - totalHpp;
+    final avgTrxValue = validTx.isNotEmpty ? grossSales / validTx.length : 0.0;
+
+    final soldProductsList = productStats.values.toList();
+    final topSellingProducts = List<Map<String, dynamic>>.from(soldProductsList)
+      ..sort((a, b) => (b['qtySold'] as double).compareTo(a['qtySold'] as double));
+    final leastSellingProducts = List<Map<String, dynamic>>.from(soldProductsList)
+      ..sort((a, b) => (a['qtySold'] as double).compareTo(b['qtySold'] as double));
+    final topRevenueProducts = List<Map<String, dynamic>>.from(soldProductsList)
+      ..sort((a, b) => (b['revenue'] as double).compareTo(a['revenue'] as double));
+    final topProfitProducts = List<Map<String, dynamic>>.from(soldProductsList)
+      ..sort((a, b) => (b['profit'] as double).compareTo(a['profit'] as double));
+
+    final unsoldProducts = prodById.values
+        .where((p) => !productStats.containsKey(p.id))
+        .map((p) => {
+              'productId': p.id,
+              'code': p.code,
+              'name': p.name,
+              'category': p.category,
+              'stock': p.stock,
+              'unit': p.baseUnit,
+              'sellingPrice': p.sellingPrice,
+            })
+        .toList();
+    final lowStockProducts = prodById.values.where((p) => p.isLowStock).toList();
+
+    // Active customer debts summary
+    final debtRows = await db.query('customer_debts');
+    final activeDebts = debtRows
+        .map((e) => CustomerDebtModel.fromMap(e))
+        .where((d) => !d.isPaidOff)
+        .toList();
+
+    final customersByFreq = List<Map<String, dynamic>>.from(customerStats.values)
+      ..sort((a, b) => (b['freq'] as int).compareTo(a['freq'] as int));
+    final customersBySpent = List<Map<String, dynamic>>.from(customerStats.values)
+      ..sort((a, b) => (b['totalSpent'] as double).compareTo(a['totalSpent'] as double));
+    final customersByMax = List<Map<String, dynamic>>.from(customerStats.values)
+      ..sort((a, b) => (b['maxTrx'] as double).compareTo(a['maxTrx'] as double));
+
+    // Supplier purchases & debts in period + active AP
+    final purchaseRows = await db.query(
+      'purchases',
+      where: "status != 'voided' AND date >= ? AND date <= ?",
+      whereArgs: [startIso, endIso],
+      orderBy: 'date DESC',
+    );
+    final supplierMap = <String, Map<String, dynamic>>{};
+    for (final pr in purchaseRows) {
+      final p = PurchaseModel.fromMap(pr);
+      final sKey = p.supplierName.toLowerCase();
+      final sEntry = supplierMap.putIfAbsent(sKey, () => {
+            'supplierName': p.supplierName,
+            'phone': p.supplierPhone,
+            'purchaseCount': 0,
+            'totalPurchaseValue': 0.0,
+            'activeDebt': 0.0,
+            'paidDebt': 0.0,
+          });
+      sEntry['purchaseCount'] = (sEntry['purchaseCount'] as int) + 1;
+      sEntry['totalPurchaseValue'] = (sEntry['totalPurchaseValue'] as double) + p.totalAmount;
+    }
+
+    final supDebtRows = await db.query('supplier_debts', where: "status != 'dibatalkan'");
+    final supDebts = supDebtRows.map((e) => SupplierDebtModel.fromMap(e)).toList();
+    for (final sd in supDebts) {
+      final sKey = sd.supplierName.toLowerCase();
+      final sEntry = supplierMap.putIfAbsent(sKey, () => {
+            'supplierName': sd.supplierName,
+            'phone': sd.supplierPhone,
+            'purchaseCount': 0,
+            'totalPurchaseValue': 0.0,
+            'activeDebt': 0.0,
+            'paidDebt': 0.0,
+          });
+      sEntry['activeDebt'] = (sEntry['activeDebt'] as double) + sd.remainingDebt;
+      sEntry['paidDebt'] = (sEntry['paidDebt'] as double) + sd.paidDebt;
+    }
+
+    final supplierPayRows = await db.query(
+      'supplier_debt_payments',
+      where: 'date >= ? AND date <= ?',
+      whereArgs: [startIso, endIso],
+      orderBy: 'date DESC',
+    );
+    final supplierList = supplierMap.values.toList()
+      ..sort((a, b) => (b['totalPurchaseValue'] as double).compareTo(a['totalPurchaseValue'] as double));
+
+    final sortedDailyKeys = dailyTrend.keys.toList()..sort();
+
+    return {
+      'sales': {
+        'totalRevenue': grossSales,
+        'netSales': netSales,
+        'trxCount': validTx.length,
+        'totalItemsSold': totalItemsSold,
+        'avgTrxValue': avgTrxValue,
+        'cashSales': cashSales,
+        'transferSales': transferSales,
+        'qrisSales': qrisSales,
+        'kasbonSales': kasbonSales,
+        'totalDiscount': totalDiscount,
+        'totalReturn': totalReturn,
+        'dailySeries': [
+          for (final k in sortedDailyKeys) {'date': k, 'total': dailyTrend[k] ?? 0.0},
+        ],
+      },
+      'profit': {
+        'totalHpp': totalHpp,
+        'grossSales': grossSales,
+        'totalDiscount': totalDiscount,
+        'totalReturn': totalReturn,
+        'netSales': netSales,
+        'grossProfit': grossProfit,
+        'profitMargin': netSales > 0 ? (grossProfit / netSales) * 100 : 0.0,
+      },
+      'products': {
+        'topSelling': topSellingProducts,
+        'leastSelling': leastSellingProducts,
+        'unsold': unsoldProducts,
+        'topRevenue': topRevenueProducts,
+        'topProfit': topProfitProducts,
+        'lowStock': lowStockProducts,
+        'categories': categoryStats.values.toList()
+          ..sort((a, b) => (b['revenue'] as double).compareTo(a['revenue'] as double)),
+      },
+      'customers': {
+        'byFreq': customersByFreq,
+        'bySpent': customersBySpent,
+        'byMaxTrx': customersByMax,
+        'activeDebts': activeDebts,
+      },
+      'suppliers': {
+        'summary': supplierList,
+        'purchases': purchaseRows.map((e) => PurchaseModel.fromMap(e)).toList(),
+        'debts': supDebts,
+        'payments': supplierPayRows.map((e) => SupplierDebtPaymentModel.fromMap(e)).toList(),
+      },
+      'transactions': validTx,
     };
   }
 

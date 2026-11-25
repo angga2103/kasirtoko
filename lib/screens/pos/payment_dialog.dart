@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import '../../models/customer.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/cash_flow_provider.dart';
+import '../../providers/customer_provider.dart';
 import '../../providers/debt_provider.dart';
 import '../../providers/printer_provider.dart';
 import '../../providers/product_provider.dart';
@@ -11,6 +13,7 @@ import '../../providers/settings_provider.dart';
 import '../../services/printer/printer_manager.dart';
 import '../../utils/app_theme.dart';
 import '../../utils/currency_format.dart';
+import '../../utils/quick_cash_helper.dart';
 import 'receipt_dialog.dart';
 
 class PaymentDialog extends StatefulWidget {
@@ -28,6 +31,7 @@ class _PaymentDialogState extends State<PaymentDialog> {
 
   String _paymentMethod = 'tunai';
   double _paidAmount = 0.0;
+  int? _selectedCustomerId;
   bool _isSubmitting = false;
 
   @override
@@ -36,8 +40,13 @@ class _PaymentDialogState extends State<PaymentDialog> {
     final pos = Provider.of<PosProvider>(context, listen: false);
     _paidAmount = pos.grandTotal;
     _cashCtrl.text = _paidAmount.toInt().toString();
+    _selectedCustomerId = pos.customerId;
     _customerNameCtrl = TextEditingController(text: pos.customerName);
     _customerPhoneCtrl = TextEditingController(text: pos.customerPhone);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Provider.of<CustomerProvider>(context, listen: false).loadCustomers();
+    });
   }
 
   @override
@@ -61,22 +70,6 @@ class _PaymentDialogState extends State<PaymentDialog> {
     final pos = Provider.of<PosProvider>(context, listen: false);
     if (pos.isEmpty || pos.isCheckingOut) return;
 
-    if (_paymentMethod == 'tunai' && _paidAmount < pos.grandTotal) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Nominal uang diterima kurang dari total tagihan!')),
-      );
-      return;
-    }
-
-    if (_paymentMethod == 'kasbon' && _customerNameCtrl.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Isi nama pelanggan untuk transaksi Kasbon / Tempo!')),
-      );
-      return;
-    }
-
-    setState(() => _isSubmitting = true);
-
     final auth = Provider.of<AuthProvider>(context, listen: false);
     final productProv = Provider.of<ProductProvider>(context, listen: false);
     final cashFlow = Provider.of<CashFlowProvider>(context, listen: false);
@@ -84,71 +77,139 @@ class _PaymentDialogState extends State<PaymentDialog> {
     final settings = Provider.of<SettingsProvider>(context, listen: false);
     final printerProv = Provider.of<PrinterProvider>(context, listen: false);
 
-    pos.setCustomerInfo(_customerNameCtrl.text, _customerPhoneCtrl.text);
+    if (!cashFlow.isShiftOpen) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Shift kasir belum dibuka! Buka shift terlebih dahulu sebelum transaksi.'),
+          backgroundColor: AppTheme.accentRed,
+        ),
+      );
+      return;
+    }
+
+    if (_paymentMethod == 'tunai' && _paidAmount < pos.grandTotal) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nominal uang diterima kurang dari total tagihan!')),
+      );
+      return;
+    }
+
+    final cleanCustName = _customerNameCtrl.text.trim();
+    if (_paymentMethod == 'kasbon' &&
+        (_selectedCustomerId == null ||
+            cleanCustName.isEmpty ||
+            cleanCustName.toLowerCase() == 'pelanggan umum')) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Kasbon hanya untuk pelanggan terdaftar. Pilih atau daftarkan pelanggan terlebih dahulu.'),
+          backgroundColor: AppTheme.accentRed,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isSubmitting = true);
+
+    pos.setCustomerInfo(
+      _paymentMethod == 'kasbon' ? cleanCustName : (cleanCustName.isEmpty ? 'Pelanggan Umum' : cleanCustName),
+      _customerPhoneCtrl.text,
+      customerId: _selectedCustomerId,
+    );
     pos.setPaymentMethod(_paymentMethod);
     pos.setAmountPaid(_paymentMethod == 'tunai' || _paymentMethod == 'kasbon' ? _paidAmount : pos.grandTotal);
 
     final cashier = auth.currentUser;
     final customInvoice = settings.generateTransactionNumber();
 
-    final transaction = await pos.checkout(
-      cashierId: cashier?.id ?? 1,
-      cashierName: cashier?.name ?? 'Kasir',
-      customInvoiceNumber: customInvoice,
-      activeShiftId: cashFlow.currentShift?.id,
-      note: _noteCtrl.text.trim(),
-      storeName: settings.storeName,
-      storeAddress: settings.storeAddress,
-      storePhone: settings.storePhone,
-      receiptConfig: settings.receiptConfig,
-    );
-
-    if (transaction == null) {
-      if (mounted) setState(() => _isSubmitting = false);
-      return;
-    }
-
-    await auth.logAction(
-      'transaksi_selesai',
-      'Transaksi ${transaction.invoiceNumber}: ${CurrencyHelper.format(transaction.grandTotal)} (${transaction.paymentMethod.toUpperCase()})',
-    );
-
-    // Sync background providers
-    await productProv.loadProducts();
-    await cashFlow.checkOpenShift();
-    if (transaction.paymentMethod == 'kasbon') {
-      await debtProv.loadDebts();
-    }
-
-    // Auto-print if configured
-    if (settings.receiptConfig.autoPrint) {
-      await PrinterManager.printTransactionReceipt(
-        printer: printerProv.defaultPrinter,
-        transaction: transaction,
+    try {
+      final transaction = await pos.checkout(
+        cashierId: cashier?.id ?? 1,
+        cashierName: cashier?.name ?? 'Kasir',
+        customInvoiceNumber: customInvoice,
+        activeShiftId: cashFlow.currentShift?.id,
+        note: _noteCtrl.text.trim(),
         storeName: settings.storeName,
         storeAddress: settings.storeAddress,
         storePhone: settings.storePhone,
         receiptConfig: settings.receiptConfig,
-        logoPath: settings.logoPath,
       );
-    }
 
-    if (!mounted) return;
-    Navigator.pop(context); // Close PaymentDialog
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => ReceiptDialog(transaction: transaction),
-    );
+      if (transaction == null) {
+        if (mounted) {
+          setState(() => _isSubmitting = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Transaksi tidak dapat diproses. Periksa keranjang dan status shift.'),
+              backgroundColor: AppTheme.accentRed,
+            ),
+          );
+        }
+        return;
+      }
+
+      await auth.logAction(
+        'transaksi_selesai',
+        'Transaksi ${transaction.invoiceNumber}: ${CurrencyHelper.format(transaction.grandTotal)} (${transaction.paymentMethod.toUpperCase()})',
+        module: 'transaksi',
+        objectId: transaction.invoiceNumber,
+      );
+
+      // Sync background providers
+      await productProv.loadProducts();
+      await cashFlow.checkOpenShift();
+      if (transaction.paymentMethod == 'kasbon') {
+        await debtProv.loadDebts();
+      }
+
+      // Auto-print if configured
+      if (settings.receiptConfig.autoPrint) {
+        await PrinterManager.printTransactionReceipt(
+          printer: printerProv.defaultPrinter,
+          transaction: transaction,
+          storeName: settings.storeName,
+          storeAddress: settings.storeAddress,
+          storePhone: settings.storePhone,
+          receiptConfig: settings.receiptConfig,
+          logoPath: settings.logoPath,
+        );
+      }
+
+      if (!mounted) return;
+      Navigator.pop(context); // Close PaymentDialog
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => ReceiptDialog(transaction: transaction),
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isSubmitting = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.toString().replaceFirst('Bad state: ', '').replaceFirst('StateError: ', '')),
+            backgroundColor: AppTheme.accentRed,
+          ),
+        );
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final pos = Provider.of<PosProvider>(context);
+    final custProv = Provider.of<CustomerProvider>(context);
+    final cashFlow = Provider.of<CashFlowProvider>(context);
+    final registeredCustomers = custProv.customers
+        .where((c) => c.id != null && c.name.trim().toLowerCase() != 'pelanggan umum')
+        .toList();
     final double change = (_paidAmount >= pos.grandTotal) ? (_paidAmount - pos.grandTotal) : 0.0;
     final bool canPay = !_isSubmitting &&
         !pos.isEmpty &&
+        cashFlow.isShiftOpen &&
         !(_paymentMethod == 'tunai' && _paidAmount < pos.grandTotal);
+
+    final quickNominals = QuickCashHelper.suggestNominals(pos.grandTotal);
+    final hasExactInNominals = quickNominals.any((n) => (n - pos.grandTotal).abs() < 1);
 
     return Dialog(
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
@@ -164,7 +225,14 @@ class _PaymentDialogState extends State<PaymentDialog> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('Konfirmasi Pembayaran', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const Expanded(
+                    child: Text(
+                      'Konfirmasi Pembayaran',
+                      style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
                   IconButton(
                     icon: const Icon(Icons.close_rounded),
                     onPressed: _isSubmitting ? null : () => Navigator.pop(context),
@@ -187,10 +255,22 @@ class _PaymentDialogState extends State<PaymentDialog> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('${pos.itemCount} Jenis (${pos.totalUnitsCount.toInt()} Item)',
-                            style: const TextStyle(fontSize: 12, color: AppTheme.textMuted)),
-                        Text('Subtotal: ${CurrencyHelper.format(pos.subtotal)}',
-                            style: const TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+                        Flexible(
+                          child: Text(
+                            '${pos.itemCount} Jenis (${pos.totalUnitsCount.toInt()} Item)',
+                            style: const TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            'Subtotal: ${CurrencyHelper.format(pos.subtotal)}',
+                            style: const TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.end,
+                          ),
+                        ),
                       ],
                     ),
                     if (pos.cartDiscount > 0)
@@ -199,7 +279,9 @@ class _PaymentDialogState extends State<PaymentDialog> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text('Diskon', style: TextStyle(fontSize: 12, color: Colors.pink)),
+                            const Flexible(
+                              child: Text('Diskon', style: TextStyle(fontSize: 12, color: Colors.pink)),
+                            ),
                             Text('-${CurrencyHelper.format(pos.cartDiscount)}',
                                 style: const TextStyle(fontSize: 12, color: Colors.pink, fontWeight: FontWeight.bold)),
                           ],
@@ -211,8 +293,10 @@ class _PaymentDialogState extends State<PaymentDialog> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text('Pajak (${pos.taxRate.toStringAsFixed(0)}%)',
-                                style: const TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+                            Flexible(
+                              child: Text('Pajak (${pos.taxRate.toStringAsFixed(0)}%)',
+                                  style: const TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+                            ),
                             Text(CurrencyHelper.format(pos.taxAmount),
                                 style: const TextStyle(fontSize: 12)),
                           ],
@@ -264,12 +348,13 @@ class _PaymentDialogState extends State<PaymentDialog> {
                   spacing: 6,
                   runSpacing: 6,
                   children: [
-                    _buildQuickCashChip('Uang Pas', pos.grandTotal),
-                    _buildQuickCashChip('10 rb', 10000),
-                    _buildQuickCashChip('20 rb', 20000),
-                    _buildQuickCashChip('50 rb', 50000),
-                    _buildQuickCashChip('100 rb', 100000),
-                    _buildQuickCashChip('200 rb', 200000),
+                    if (!hasExactInNominals && pos.grandTotal > 0)
+                      _buildQuickCashChip('Uang Pas', pos.grandTotal),
+                    ...quickNominals.map((amt) {
+                      final isExact = (amt - pos.grandTotal).abs() < 1;
+                      final formatted = CurrencyHelper.format(amt);
+                      return _buildQuickCashChip(isExact ? '$formatted (Pas)' : formatted, amt);
+                    }),
                   ],
                 ),
                 const SizedBox(height: 10),
@@ -346,23 +431,149 @@ class _PaymentDialogState extends State<PaymentDialog> {
                 const SizedBox(height: 12),
               ],
 
-              TextField(
-                controller: _customerNameCtrl,
-                decoration: InputDecoration(
-                  labelText: _paymentMethod == 'kasbon' ? 'Nama Pelanggan *' : 'Nama Pelanggan (Opsional)',
-                  prefixIcon: const Icon(Icons.person_rounded, size: 20),
+              if (!cashFlow.isShiftOpen)
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accentRedSoft,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.accentRed.withValues(alpha: 0.4)),
+                  ),
+                  child: const Text(
+                    'Shift kasir sedang tutup! Buka shift terlebih dahulu sebelum menyelesaikan transaksi.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.accentRed, fontWeight: FontWeight.w600),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _customerPhoneCtrl,
-                keyboardType: TextInputType.phone,
-                decoration: const InputDecoration(
-                  labelText: 'No. WhatsApp Pelanggan',
-                  hintText: '08xxxxxxxxxx',
-                  prefixIcon: Icon(Icons.phone_android_rounded, size: 20),
+
+              if (_paymentMethod == 'kasbon') ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accentOrange.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.accentOrange.withValues(alpha: 0.35)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.verified_user_rounded, size: 16, color: AppTheme.accentOrange),
+                          const SizedBox(width: 6),
+                          const Expanded(
+                            child: Text(
+                              'Pelanggan Terdaftar (Wajib untuk Kasbon) *',
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.accentOrange),
+                            ),
+                          ),
+                          TextButton.icon(
+                            onPressed: () => _quickAddRegisteredCustomer(custProv),
+                            icon: const Icon(Icons.person_add_alt_1_rounded, size: 15),
+                            label: const Text('+ Daftar Baru', style: TextStyle(fontSize: 11)),
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      if (registeredCustomers.isEmpty)
+                        const Text(
+                          'Belum ada pelanggan terdaftar. Tekan "+ Daftar Baru" di atas untuk mendaftarkan pelanggan.',
+                          style: TextStyle(fontSize: 11.5, color: AppTheme.accentRed),
+                        )
+                      else
+                        DropdownButtonFormField<int?>(
+                          value: registeredCustomers.any((c) => c.id == _selectedCustomerId)
+                              ? _selectedCustomerId
+                              : null,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Pilih Pelanggan Terdaftar *',
+                            prefixIcon: Icon(Icons.person_pin_rounded, size: 20),
+                            filled: true,
+                            fillColor: Colors.white,
+                          ),
+                          hint: const Text('Pilih pelanggan (Pelanggan Umum tidak diizinkan)'),
+                          items: registeredCustomers
+                              .map((c) => DropdownMenuItem<int?>(
+                                    value: c.id,
+                                    child: Text(
+                                      c.phone.isNotEmpty ? '${c.name} (${c.phone})' : c.name,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ))
+                              .toList(),
+                          onChanged: (custId) {
+                            final picked = registeredCustomers.cast<CustomerModel?>().firstWhere(
+                                  (c) => c?.id == custId,
+                                  orElse: () => null,
+                                );
+                            setState(() {
+                              _selectedCustomerId = custId;
+                              _customerNameCtrl.text = picked?.name ?? '';
+                              _customerPhoneCtrl.text = picked?.phone ?? '';
+                            });
+                          },
+                        ),
+                    ],
+                  ),
                 ),
-              ),
+              ] else ...[
+                if (registeredCustomers.isNotEmpty) ...[
+                  DropdownButtonFormField<int?>(
+                    value: registeredCustomers.any((c) => c.id == _selectedCustomerId) ? _selectedCustomerId : null,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Pelanggan Terdaftar (Opsional)',
+                      prefixIcon: Icon(Icons.people_outline_rounded, size: 20),
+                    ),
+                    items: [
+                      const DropdownMenuItem<int?>(value: null, child: Text('Pelanggan Umum / Input Manual')),
+                      ...registeredCustomers.map((c) => DropdownMenuItem<int?>(
+                            value: c.id,
+                            child: Text(c.phone.isNotEmpty ? '${c.name} (${c.phone})' : c.name, overflow: TextOverflow.ellipsis),
+                          )),
+                    ],
+                    onChanged: (custId) {
+                      setState(() {
+                        _selectedCustomerId = custId;
+                        if (custId == null) {
+                          _customerNameCtrl.text = 'Pelanggan Umum';
+                          _customerPhoneCtrl.clear();
+                        } else {
+                          final picked = registeredCustomers.firstWhere((c) => c.id == custId);
+                          _customerNameCtrl.text = picked.name;
+                          _customerPhoneCtrl.text = picked.phone;
+                        }
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                TextField(
+                  controller: _customerNameCtrl,
+                  onChanged: (_) => _selectedCustomerId = null,
+                  decoration: const InputDecoration(
+                    labelText: 'Nama Pelanggan (Opsional)',
+                    prefixIcon: Icon(Icons.person_rounded, size: 20),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _customerPhoneCtrl,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: 'No. WhatsApp Pelanggan',
+                    hintText: '08xxxxxxxxxx',
+                    prefixIcon: Icon(Icons.phone_android_rounded, size: 20),
+                  ),
+                ),
+              ],
               const SizedBox(height: 8),
               TextField(
                 controller: _noteCtrl,
@@ -440,5 +651,82 @@ class _PaymentDialogState extends State<PaymentDialog> {
       onPressed: () => _setQuickCash(amount),
       backgroundColor: Colors.grey.shade100,
     );
+  }
+
+  Future<void> _quickAddRegisteredCustomer(CustomerProvider custProv) async {
+    final nameCtrl = TextEditingController();
+    final phoneCtrl = TextEditingController();
+    final addressCtrl = TextEditingController();
+    String? errText;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDState) => AlertDialog(
+          title: const Text('Daftarkan Pelanggan Baru'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(labelText: 'Nama Lengkap Pelanggan *'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: phoneCtrl,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(labelText: 'No. HP / WhatsApp *'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: addressCtrl,
+                decoration: const InputDecoration(labelText: 'Alamat (Opsional)'),
+              ),
+              if (errText != null) ...[
+                const SizedBox(height: 8),
+                Text(errText!, style: const TextStyle(color: AppTheme.accentRed, fontSize: 12)),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Batal')),
+            ElevatedButton(
+              onPressed: () async {
+                final cleanName = nameCtrl.text.trim();
+                final cleanPhone = phoneCtrl.text.trim();
+                if (cleanName.isEmpty || cleanName.toLowerCase() == 'pelanggan umum') {
+                  setDState(() => errText = 'Masukkan nama pelanggan yang valid (bukan Pelanggan Umum).');
+                  return;
+                }
+                if (cleanPhone.isEmpty) {
+                  setDState(() => errText = 'Nomor HP/WA wajib diisi untuk pencatatan kasbon.');
+                  return;
+                }
+                await custProv.saveCustomer(
+                  CustomerModel(name: cleanName, phone: cleanPhone, address: addressCtrl.text.trim()),
+                );
+                final matched = custProv.customers.lastWhere(
+                  (c) => c.name.trim().toLowerCase() == cleanName.toLowerCase(),
+                  orElse: () => CustomerModel(name: cleanName, phone: cleanPhone),
+                );
+                if (mounted) {
+                  setState(() {
+                    _selectedCustomerId = matched.id;
+                    _customerNameCtrl.text = matched.name;
+                    _customerPhoneCtrl.text = matched.phone;
+                  });
+                }
+                if (ctx.mounted) Navigator.pop(ctx);
+              },
+              child: const Text('Simpan & Pilih'),
+            ),
+          ],
+        ),
+      ),
+    ).then((_) {
+      nameCtrl.dispose();
+      phoneCtrl.dispose();
+      addressCtrl.dispose();
+    });
   }
 }

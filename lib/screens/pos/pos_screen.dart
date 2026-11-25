@@ -16,6 +16,7 @@ import '../../services/hardware_bridge.dart';
 import '../../utils/app_theme.dart';
 import '../../utils/currency_format.dart';
 import '../../widgets/quantity_stepper.dart';
+import '../cash_flow/shift_screen.dart';
 import '../scanner/barcode_scanner_screen.dart';
 import 'held_orders_dialog.dart';
 import 'payment_dialog.dart';
@@ -37,8 +38,12 @@ class _PosScreenState extends State<PosScreen> {
       final prodProv = Provider.of<ProductProvider>(context, listen: false);
       final pos = Provider.of<PosProvider>(context, listen: false);
       final settings = Provider.of<SettingsProvider>(context, listen: false);
+      final cashFlow = Provider.of<CashFlowProvider>(context, listen: false);
+      final custProv = Provider.of<CustomerProvider>(context, listen: false);
       prodProv.loadProducts();
       pos.loadPromos();
+      cashFlow.checkOpenShift();
+      custProv.loadCustomers();
       pos.configureTax(enabled: settings.taxEnabled, rate: settings.taxRate);
     });
   }
@@ -226,7 +231,7 @@ class _PosScreenState extends State<PosScreen> {
                         title: Text(c.name, style: const TextStyle(fontWeight: FontWeight.w600)),
                         subtitle: Text(c.phone),
                         onTap: () {
-                          pos.setCustomerInfo(c.name, c.phone);
+                          pos.setCustomerInfo(c.name, c.phone, customerId: c.id);
                           Navigator.pop(ctx);
                         },
                       );
@@ -241,7 +246,12 @@ class _PosScreenState extends State<PosScreen> {
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Batal')),
           ElevatedButton(
             onPressed: () {
-              pos.setCustomerInfo(nameCtrl.text, phoneCtrl.text);
+              final enteredName = nameCtrl.text.trim();
+              final match = custProv.customers.cast<CustomerModel?>().firstWhere(
+                (c) => c != null && c.name.trim().toLowerCase() == enteredName.toLowerCase(),
+                orElse: () => null,
+              );
+              pos.setCustomerInfo(nameCtrl.text, phoneCtrl.text, customerId: match?.id);
               Navigator.pop(ctx);
             },
             child: const Text('Terapkan'),
@@ -338,6 +348,39 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   void _openPaymentFlow() {
+    final cashFlow = Provider.of<CashFlowProvider>(context, listen: false);
+    if (!cashFlow.isShiftOpen) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.lock_clock_rounded, color: AppTheme.accentOrange),
+              SizedBox(width: 8),
+              Expanded(child: Text('Shift Kasir Belum Dibuka')),
+            ],
+          ),
+          content: const Text(
+            'Transaksi penjualan hanya diperbolehkan saat shift kasir aktif agar kas laci dan laporan akurat. Silakan buka shift terlebih dahulu.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Tutup')),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.play_arrow_rounded),
+              label: const Text('Buka Shift Sekarang'),
+              onPressed: () {
+                Navigator.pop(ctx);
+                Navigator.push(context, MaterialPageRoute(builder: (_) => const ShiftScreen())).then((_) {
+                  if (mounted) cashFlow.checkOpenShift();
+                });
+              },
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -470,12 +513,13 @@ class _PosScreenState extends State<PosScreen> {
                         crossAxisCount: gridCols,
                         crossAxisSpacing: 10,
                         mainAxisSpacing: 10,
-                        childAspectRatio: isTablet ? 0.92 : 0.85,
+                        childAspectRatio: isTablet ? 0.78 : 0.68,
                       ),
                       itemCount: productProv.products.length,
                       itemBuilder: (context, index) {
                         final prod = productProv.products[index];
                         final cartQty = pos.getCartQtyForProduct(prod.id ?? -1);
+                        final baseCartQty = pos.getBaseCartQtyForProduct(prod.id ?? -1, prod.baseUnit);
                         final hasImage = prod.imagePath != null &&
                             prod.imagePath!.isNotEmpty &&
                             File(prod.imagePath!).existsSync();
@@ -491,7 +535,7 @@ class _PosScreenState extends State<PosScreen> {
                             onLongPress: () => _showUnitSelector(prod),
                             borderRadius: BorderRadius.circular(12),
                             child: Container(
-                              padding: const EdgeInsets.all(10),
+                              padding: const EdgeInsets.all(9),
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(12),
                                 border: Border.all(
@@ -525,7 +569,7 @@ class _PosScreenState extends State<PosScreen> {
                                                   child: Icon(
                                                     prod.isService ? Icons.build_circle_rounded : Icons.inventory_2_rounded,
                                                     color: prod.isService ? Colors.purple : AppTheme.primaryGreenLight,
-                                                    size: 32,
+                                                    size: 30,
                                                   ),
                                                 ),
                                         ),
@@ -537,12 +581,18 @@ class _PosScreenState extends State<PosScreen> {
                                             decoration: BoxDecoration(
                                               color: prod.isService
                                                   ? Colors.purple.shade700
-                                                  : (prod.isLowStock ? AppTheme.accentOrange : Colors.black87),
+                                                  : (!prod.trackStock
+                                                      ? Colors.blueGrey
+                                                      : (prod.isLowStock ? AppTheme.accentOrange : Colors.black87)),
                                               borderRadius: BorderRadius.circular(6),
                                             ),
                                             child: Text(
-                                              prod.isService ? 'JASA' : 'Stok: ${prod.stock.toInt()}',
-                                              style: const TextStyle(color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.bold),
+                                              prod.isService
+                                                  ? 'JASA'
+                                                  : (!prod.trackStock
+                                                      ? 'NON-STOK'
+                                                      : 'Stok: ${prod.stock == prod.stock.truncateToDouble() ? prod.stock.toInt() : prod.stock.toStringAsFixed(1)}'),
+                                              style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
                                             ),
                                           ),
                                         ),
@@ -559,17 +609,17 @@ class _PosScreenState extends State<PosScreen> {
                                               child: Text(
                                                 'x${cartQty == cartQty.truncateToDouble() ? cartQty.toInt() : cartQty.toStringAsFixed(1)}',
                                                 style: const TextStyle(
-                                                    color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.bold),
+                                                    color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
                                               ),
                                             ),
                                           ),
                                       ],
                                     ),
                                   ),
-                                  const SizedBox(height: 6),
+                                  const SizedBox(height: 5),
                                   Text(
                                     prod.name,
-                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                   ),
@@ -581,7 +631,7 @@ class _PosScreenState extends State<PosScreen> {
                                         child: Text(
                                           CurrencyHelper.format(prod.sellingPrice),
                                           style: const TextStyle(
-                                            fontSize: 13.5,
+                                            fontSize: 13,
                                             fontWeight: FontWeight.bold,
                                             color: AppTheme.primaryGreen,
                                           ),
@@ -605,6 +655,24 @@ class _PosScreenState extends State<PosScreen> {
                                           ),
                                         ),
                                     ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  _ProductGridQtyControl(
+                                    qty: baseCartQty,
+                                    unitLabel: prod.baseUnit,
+                                    onDecrement: () {
+                                      final res = pos.setExactBaseQtyForProduct(prod, baseCartQty - 1);
+                                      if (!res.success) _showCartError(res.message);
+                                    },
+                                    onIncrement: () {
+                                      final res = pos.addProduct(prod);
+                                      if (!res.success) _showCartError(res.message);
+                                    },
+                                    onSetQty: (val) {
+                                      final res = pos.setExactBaseQtyForProduct(prod, val);
+                                      if (!res.success) _showCartError(res.message);
+                                      return res.success;
+                                    },
                                   ),
                                 ],
                               ),
@@ -630,16 +698,24 @@ class _PosScreenState extends State<PosScreen> {
               ),
             ),
             const SizedBox(width: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-              decoration: BoxDecoration(
-                color: cashFlow.isShiftOpen ? AppTheme.success : AppTheme.accentOrange,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Text(
-                cashFlow.isShiftOpen ? 'Shift Aktif' : 'No Shift',
-                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
-                maxLines: 1,
+            InkWell(
+              onTap: () {
+                Navigator.push(context, MaterialPageRoute(builder: (_) => const ShiftScreen())).then((_) {
+                  if (mounted) cashFlow.checkOpenShift();
+                });
+              },
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: cashFlow.isShiftOpen ? AppTheme.success : AppTheme.accentOrange,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  cashFlow.isShiftOpen ? 'Shift Aktif' : 'Buka Shift',
+                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
+                  maxLines: 1,
+                ),
               ),
             ),
           ],
@@ -1076,6 +1152,146 @@ class _CartPanelWidget extends StatelessWidget {
         children: [
           Text(l, style: TextStyle(fontSize: 12, color: color ?? AppTheme.textMuted)),
           Text(r, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color ?? AppTheme.textDark)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProductGridQtyControl extends StatefulWidget {
+  final double qty;
+  final String unitLabel;
+  final VoidCallback onDecrement;
+  final VoidCallback onIncrement;
+  final bool Function(double newQty) onSetQty;
+
+  const _ProductGridQtyControl({
+    required this.qty,
+    required this.unitLabel,
+    required this.onDecrement,
+    required this.onIncrement,
+    required this.onSetQty,
+  });
+
+  @override
+  State<_ProductGridQtyControl> createState() => _ProductGridQtyControlState();
+}
+
+class _ProductGridQtyControlState extends State<_ProductGridQtyControl> {
+  late TextEditingController _ctrl;
+  final FocusNode _focusNode = FocusNode();
+
+  String _formatQty(double q) {
+    if (q <= 0) return '0';
+    return q == q.truncateToDouble() ? q.toInt().toString() : q.toStringAsFixed(1);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: _formatQty(widget.qty));
+    _focusNode.addListener(() {
+      if (!_focusNode.hasFocus) {
+        _commitTypedQty();
+      } else {
+        _ctrl.selection = TextSelection(baseOffset: 0, extentOffset: _ctrl.text.length);
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _ProductGridQtyControl oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_focusNode.hasFocus && (oldWidget.qty != widget.qty || _ctrl.text != _formatQty(widget.qty))) {
+      _ctrl.text = _formatQty(widget.qty);
+    }
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _commitTypedQty() {
+    final normalized = _ctrl.text.trim().replaceAll(',', '.');
+    final parsed = double.tryParse(normalized);
+    if (parsed == null || parsed < 0) {
+      _ctrl.text = _formatQty(widget.qty);
+      return;
+    }
+    final ok = widget.onSetQty(parsed);
+    if (!ok) {
+      _ctrl.text = _formatQty(widget.qty);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasQty = widget.qty > 0;
+    return Container(
+      height: 30,
+      decoration: BoxDecoration(
+        color: hasQty ? AppTheme.primaryGreenSoft : Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: hasQty ? AppTheme.primaryGreen.withValues(alpha: 0.45) : Colors.grey.shade300,
+        ),
+      ),
+      child: Row(
+        children: [
+          InkWell(
+            onTap: hasQty ? widget.onDecrement : null,
+            borderRadius: const BorderRadius.horizontal(left: Radius.circular(7)),
+            child: SizedBox(
+              width: 28,
+              height: 30,
+              child: Icon(
+                Icons.remove_rounded,
+                size: 16,
+                color: hasQty ? AppTheme.primaryGreen : Colors.grey.shade400,
+              ),
+            ),
+          ),
+          Expanded(
+            child: TextField(
+              controller: _ctrl,
+              focusNode: _focusNode,
+              textAlign: TextAlign.center,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: hasQty ? AppTheme.primaryGreen : AppTheme.textMuted,
+              ),
+              decoration: const InputDecoration(
+                isDense: true,
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                contentPadding: EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+                filled: false,
+              ),
+              onSubmitted: (_) {
+                _commitTypedQty();
+                _focusNode.unfocus();
+              },
+            ),
+          ),
+          InkWell(
+            onTap: widget.onIncrement,
+            borderRadius: const BorderRadius.horizontal(right: Radius.circular(7)),
+            child: Container(
+              width: 28,
+              height: 30,
+              decoration: BoxDecoration(
+                color: AppTheme.primaryGreen,
+                borderRadius: const BorderRadius.horizontal(right: Radius.circular(7)),
+              ),
+              child: const Icon(Icons.add_rounded, size: 16, color: Colors.white),
+            ),
+          ),
         ],
       ),
     );

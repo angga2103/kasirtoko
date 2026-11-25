@@ -230,6 +230,18 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen> {
               const Text('Elemen yang Ditampilkan di Struk', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
               const SizedBox(height: 4),
               SwitchListTile(dense: true, contentPadding: EdgeInsets.zero, title: const Text('Logo Toko'), value: _cfg.showLogo, onChanged: (v) => setState(() => _cfg = _cfg.copyWith(showLogo: v))),
+              if (_cfg.showLogo)
+                SwitchListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Sembunyikan Nama Toko Jika Logo Ditampilkan'),
+                  subtitle: const Text(
+                    'Menghemat ruang kertas thermal ketika logo toko aktif & termuat',
+                    style: TextStyle(fontSize: 11),
+                  ),
+                  value: _cfg.hideStoreNameWithLogo,
+                  onChanged: (v) => setState(() => _cfg = _cfg.copyWith(hideStoreNameWithLogo: v)),
+                ),
               SwitchListTile(dense: true, contentPadding: EdgeInsets.zero, title: const Text('Alamat & Telepon Toko'), value: _cfg.showAddress, onChanged: (v) => setState(() => _cfg = _cfg.copyWith(showAddress: v, showPhone: v))),
               SwitchListTile(dense: true, contentPadding: EdgeInsets.zero, title: const Text('Nama Kasir'), value: _cfg.showCashier, onChanged: (v) => setState(() => _cfg = _cfg.copyWith(showCashier: v))),
               SwitchListTile(dense: true, contentPadding: EdgeInsets.zero, title: const Text('Informasi Pelanggan'), value: _cfg.showCustomer, onChanged: (v) => setState(() => _cfg = _cfg.copyWith(showCustomer: v))),
@@ -345,13 +357,17 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen> {
           const Divider(),
           if (_cfg.showLogo && settings.logoPath.isNotEmpty && File(settings.logoPath).existsSync()) ...[
             SizedBox(height: 44, child: Image.file(File(settings.logoPath), fit: BoxFit.contain)),
-            const SizedBox(height: 6),
+            const SizedBox(height: 4),
           ],
-          Text(
-            settings.storeName,
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: _cfg.basePdfFontSize + 5),
-            textAlign: _cfg.headerAlignment == 'left' ? TextAlign.left : TextAlign.center,
-          ),
+          if (!(_cfg.showLogo &&
+              _cfg.hideStoreNameWithLogo &&
+              settings.logoPath.isNotEmpty &&
+              File(settings.logoPath).existsSync()))
+            Text(
+              settings.storeName,
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: _cfg.basePdfFontSize + 5),
+              textAlign: _cfg.headerAlignment == 'left' ? TextAlign.left : TextAlign.center,
+            ),
           if (_cfg.showAddress)
             Text(settings.storeAddress, style: TextStyle(fontSize: _cfg.basePdfFontSize + 1, color: AppTheme.textMuted)),
           if (_cfg.showPhone)

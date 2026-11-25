@@ -7,6 +7,8 @@ class TransactionModel {
   final DateTime date;
   final int cashierId;
   final String cashierName;
+  final int? customerId;
+  final int? shiftId;
   final String customerName;
   final String customerPhone;
   final double subtotal;
@@ -29,6 +31,8 @@ class TransactionModel {
     required this.date,
     required this.cashierId,
     required this.cashierName,
+    this.customerId,
+    this.shiftId,
     this.customerName = 'Pelanggan Umum',
     this.customerPhone = '',
     required this.subtotal,
@@ -63,6 +67,8 @@ class TransactionModel {
       'date': date.toIso8601String(),
       'cashier_id': cashierId,
       'cashier_name': cashierName,
+      if (customerId != null) 'customer_id': customerId,
+      if (shiftId != null) 'shift_id': shiftId,
       'customer_name': customerName,
       'customer_phone': customerPhone,
       'subtotal': subtotal,
@@ -87,6 +93,8 @@ class TransactionModel {
       date: DateTime.parse(map['date']),
       cashierId: map['cashier_id'] ?? 1,
       cashierName: map['cashier_name'] ?? 'Kasir',
+      customerId: map['customer_id'] as int?,
+      shiftId: map['shift_id'] as int?,
       customerName: map['customer_name'] ?? 'Pelanggan Umum',
       customerPhone: map['customer_phone'] ?? '',
       subtotal: (map['subtotal'] as num).toDouble(),

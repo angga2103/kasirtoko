@@ -1,5 +1,56 @@
+class CustomerDebtPaymentModel {
+  final int? id;
+  final int debtId;
+  final int? customerId;
+  final double amount;
+  final String paymentMethod; // 'tunai' | 'transfer' | 'qris' | 'retur'
+  final int? shiftId;
+  final String cashierName;
+  final DateTime date;
+  final String note;
+
+  CustomerDebtPaymentModel({
+    this.id,
+    required this.debtId,
+    this.customerId,
+    required this.amount,
+    this.paymentMethod = 'tunai',
+    this.shiftId,
+    this.cashierName = 'Kasir',
+    DateTime? date,
+    this.note = '',
+  }) : date = date ?? DateTime.now();
+
+  Map<String, dynamic> toMap() => {
+        if (id != null) 'id': id,
+        'debt_id': debtId,
+        if (customerId != null) 'customer_id': customerId,
+        'amount': amount,
+        'payment_method': paymentMethod,
+        if (shiftId != null) 'shift_id': shiftId,
+        'cashier_name': cashierName,
+        'date': date.toIso8601String(),
+        'note': note,
+      };
+
+  factory CustomerDebtPaymentModel.fromMap(Map<String, dynamic> map) {
+    return CustomerDebtPaymentModel(
+      id: map['id'] as int?,
+      debtId: map['debt_id'] as int,
+      customerId: map['customer_id'] as int?,
+      amount: (map['amount'] as num).toDouble(),
+      paymentMethod: (map['payment_method'] ?? 'tunai').toString(),
+      shiftId: map['shift_id'] as int?,
+      cashierName: (map['cashier_name'] ?? 'Kasir').toString(),
+      date: DateTime.parse(map['date']),
+      note: (map['note'] ?? '').toString(),
+    );
+  }
+}
+
 class CustomerDebtModel {
   final int? id;
+  final int? customerId;
   final String customerName;
   final String customerPhone;
   final String invoiceNumber;
@@ -12,6 +63,7 @@ class CustomerDebtModel {
 
   CustomerDebtModel({
     this.id,
+    this.customerId,
     required this.customerName,
     required this.customerPhone,
     required this.invoiceNumber,
@@ -23,8 +75,8 @@ class CustomerDebtModel {
     this.note = '',
   });
 
-  double get remainingDebt => totalDebt - paidDebt;
-  bool get isPaidOff => remainingDebt <= 0;
+  double get remainingDebt => (totalDebt - paidDebt).clamp(0.0, double.infinity);
+  bool get isPaidOff => remainingDebt <= 0.001;
 
   bool get isOverdue {
     if (isPaidOff) return false;
@@ -43,7 +95,8 @@ class CustomerDebtModel {
 
   Map<String, dynamic> toMap() {
     return {
-      'id': id,
+      if (id != null) 'id': id,
+      if (customerId != null) 'customer_id': customerId,
       'customer_name': customerName,
       'customer_phone': customerPhone,
       'invoice_number': invoiceNumber,
@@ -58,7 +111,8 @@ class CustomerDebtModel {
 
   factory CustomerDebtModel.fromMap(Map<String, dynamic> map) {
     return CustomerDebtModel(
-      id: map['id'],
+      id: map['id'] as int?,
+      customerId: map['customer_id'] as int?,
       customerName: map['customer_name'] ?? 'Pelanggan',
       customerPhone: map['customer_phone'] ?? '',
       invoiceNumber: map['invoice_number'] ?? '',

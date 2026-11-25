@@ -46,6 +46,7 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
   late TextEditingController _descCtrl;
 
   bool _isService = false;
+  bool _trackStock = true;
   String _conditionType = 'baru';
   String? _imagePath;
   BarcodeConflictResult? _barcodeConflict;
@@ -75,6 +76,7 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
     _descCtrl = TextEditingController(text: p?.description ?? '');
 
     _isService = p?.isService ?? false;
+    _trackStock = p?.trackStock ?? !_isService;
     _conditionType = p?.conditionType ?? 'baru';
     _imagePath = p?.imagePath;
     _units = p != null ? List.from(p.units) : [];
@@ -444,6 +446,7 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
       category: _categoryCtrl.text.trim(),
       barcode: barcodeVal,
       isService: _isService,
+      trackStock: _isService ? false : _trackStock,
       baseUnit: _baseUnitCtrl.text.trim(),
       costPrice: cost,
       sellingPrice: sell,
@@ -596,7 +599,11 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
                                   Switch(
                                     value: _isService,
                                     activeColor: Colors.purple,
-                                    onChanged: (val) => setState(() => _isService = val),
+                                    onChanged: (val) => setState(() {
+                                      _isService = val;
+                                      if (val) _trackStock = false;
+                                      else if (widget.productToEdit == null) _trackStock = true;
+                                    }),
                                   ),
                                 ],
                               ),
@@ -744,6 +751,20 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
                   ),
                   if (!_isService) ...[
                     const SizedBox(height: 10),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      title: const Text('Kelola & Validasi Stok Produk', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                      subtitle: Text(
+                        _trackStock
+                            ? 'Stok berkurang saat terjual dan diblokir jika habis'
+                            : 'Non-stok (stok tidak dibatasi & tidak dipotong saat kasir)',
+                        style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                      ),
+                      value: _trackStock,
+                      onChanged: (val) => setState(() => _trackStock = val),
+                    ),
+                    const SizedBox(height: 6),
                     TextFormField(
                       controller: _minStockCtrl,
                       keyboardType: TextInputType.number,

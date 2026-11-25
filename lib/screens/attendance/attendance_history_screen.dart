@@ -1,7 +1,10 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../database/db_helper.dart';
+import '../../models/attendance.dart';
 import '../../providers/attendance_provider.dart';
+import '../../providers/auth_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../services/whatsapp_service.dart';
 import '../../utils/app_theme.dart';
@@ -14,7 +17,8 @@ class AttendanceHistoryScreen extends StatefulWidget {
   State<AttendanceHistoryScreen> createState() => _AttendanceHistoryScreenState();
 }
 
-class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> with SingleTickerProviderStateMixin {
+class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
   @override
@@ -32,10 +36,129 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> with 
     super.dispose();
   }
 
+  Future<void> _showAdminCorrectDialog(AttendanceModel att) async {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    final attProv = Provider.of<AttendanceProvider>(context, listen: false);
+    final admin = auth.currentUser;
+    if (admin == null || !admin.isOwnerOrAdmin) return;
+
+    String status = att.status == 'terlambat' ? 'terlambat' : 'tepat_waktu';
+    final lateCtrl = TextEditingController(text: att.lateMinutes.toString());
+    final noteCtrl = TextEditingController(text: att.correctionNote);
+    String? errMsg;
+    bool saving = false;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDState) => AlertDialog(
+          title: Text('Koreksi Admin • ${att.employeeName}', style: const TextStyle(fontSize: 16)),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Absen ${att.type.toUpperCase()} • ${DateHelper.formatFull(att.timestamp)}',
+                    style: const TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: status,
+                    decoration: const InputDecoration(labelText: 'Status Kedisiplinan Terkoreksi'),
+                    items: const [
+                      DropdownMenuItem(value: 'tepat_waktu', child: Text('TEPAT WAKTU')),
+                      DropdownMenuItem(value: 'terlambat', child: Text('TERLAMBAT')),
+                    ],
+                    onChanged: (v) {
+                      setDState(() {
+                        status = v ?? 'tepat_waktu';
+                        if (status == 'tepat_waktu') lateCtrl.text = '0';
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: lateCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Menit Keterlambatan'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: noteCtrl,
+                    maxLines: 2,
+                    decoration: const InputDecoration(
+                      labelText: 'Alasan Koreksi Owner/Admin *',
+                      hintText: 'Misal: Izin dinas / kendala teknis',
+                    ),
+                  ),
+                  if (errMsg != null) ...[
+                    const SizedBox(height: 8),
+                    Text(errMsg!, style: const TextStyle(color: AppTheme.accentRed, fontSize: 12)),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: saving ? null : () => Navigator.pop(ctx), child: const Text('Batal')),
+            ElevatedButton(
+              onPressed: saving
+                  ? null
+                  : () async {
+                      final lateMin = int.tryParse(lateCtrl.text.trim()) ?? 0;
+                      if (noteCtrl.text.trim().isEmpty) {
+                        setDState(() => errMsg = 'Alasan koreksi wajib diisi.');
+                        return;
+                      }
+                      setDState(() {
+                        saving = true;
+                        errMsg = null;
+                      });
+                      try {
+                        await DatabaseHelper.instance.correctAttendanceByAdmin(
+                          attendanceId: att.id!,
+                          newStatus: status,
+                          newLateMinutes: status == 'tepat_waktu' ? 0 : lateMin,
+                          correctionNote: noteCtrl.text.trim(),
+                          admin: admin,
+                        );
+                        await attProv.loadAttendances();
+                        if (ctx.mounted) Navigator.pop(ctx);
+                        if (mounted) {
+                          ScaffoldMessenger.of(this.context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Koreksi absensi berhasil disimpan & dicatat di Log Audit.'),
+                              backgroundColor: AppTheme.success,
+                            ),
+                          );
+                        }
+                      } catch (e) {
+                        setDState(() {
+                          saving = false;
+                          errMsg = e.toString().replaceFirst('Bad state: ', '');
+                        });
+                      }
+                    },
+              child: Text(saving ? 'Menyimpan...' : 'Simpan Koreksi'),
+            ),
+          ],
+        ),
+      ),
+    ).then((_) {
+      lateCtrl.dispose();
+      noteCtrl.dispose();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final attProv = Provider.of<AttendanceProvider>(context);
     final settings = Provider.of<SettingsProvider>(context);
+    final auth = Provider.of<AuthProvider>(context);
+    final isOwnerOrAdmin = auth.currentUser?.isOwnerOrAdmin == true;
 
     return Scaffold(
       appBar: AppBar(
@@ -55,7 +178,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> with 
         controller: _tabController,
         children: [
           _buildDisciplineSummaryTab(attProv),
-          _buildPhotoLogsTab(attProv, settings),
+          _buildPhotoLogsTab(attProv, settings, isOwnerOrAdmin),
         ],
       ),
     );
@@ -147,7 +270,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> with 
     );
   }
 
-  Widget _buildPhotoLogsTab(AttendanceProvider attProv, SettingsProvider settings) {
+  Widget _buildPhotoLogsTab(AttendanceProvider attProv, SettingsProvider settings, bool isOwnerOrAdmin) {
     if (attProv.attendances.isEmpty) {
       return const Center(child: Text('Belum ada foto absensi yang tersimpan.'));
     }
@@ -166,7 +289,6 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> with 
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Photo thumbnail
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
                   child: Container(
@@ -180,7 +302,6 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> with 
                 ),
                 const SizedBox(width: 12),
 
-                // Attendance Meta Info
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -188,9 +309,12 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> with 
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(
-                            a.employeeName,
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                          Expanded(
+                            child: Text(
+                              a.employeeName,
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -216,28 +340,46 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> with 
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Kode: ${a.validationHash}',
+                        'Token: ${a.challengeCode} • Hash: ${a.validationHash}',
                         style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.amber),
                       ),
                       Text(
-                        'Liveness: ${a.isLivenessPassed ? "Lolos (Manusia Hidup Asli)" : "Manual"}',
+                        'Liveness: ${a.isLivenessPassed ? "Lolos (Manusia Hidup Asli)" : "Manual"}${a.deviceInfo.isNotEmpty ? " • ${a.deviceInfo}" : ""}',
                         style: const TextStyle(fontSize: 10, color: AppTheme.textMuted),
                       ),
+                      if (a.isCorrected)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            'Dikoreksi Admin: ${a.correctionNote}',
+                            style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: AppTheme.accentOrange),
+                          ),
+                        ),
                     ],
                   ),
                 ),
 
-                // Resend to WhatsApp
-                IconButton(
-                  icon: const Icon(Icons.share_rounded, color: Colors.green),
-                  tooltip: 'Kirim Ulang ke WA Owner',
-                  onPressed: () async {
-                    await WhatsAppService.sendAttendanceToAdmin(
-                      attendance: a,
-                      ownerPhone: settings.ownerPhone,
-                      storeName: settings.storeName,
-                    );
-                  },
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.share_rounded, color: Colors.green),
+                      tooltip: 'Kirim Ulang ke WA Owner',
+                      onPressed: () async {
+                        await WhatsAppService.sendAttendanceToAdmin(
+                          attendance: a,
+                          ownerPhone: settings.ownerPhone,
+                          storeName: settings.storeName,
+                        );
+                      },
+                    ),
+                    if (isOwnerOrAdmin && a.id != null)
+                      IconButton(
+                        icon: const Icon(Icons.edit_note_rounded, color: AppTheme.accentOrange),
+                        tooltip: 'Koreksi Audit Admin',
+                        onPressed: () => _showAdminCorrectDialog(a),
+                      ),
+                  ],
                 ),
               ],
             ),

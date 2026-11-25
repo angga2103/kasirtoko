@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -21,16 +22,22 @@ class AttendanceCameraScreen extends StatefulWidget {
 }
 
 class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
+  static const int _tokenTtlSeconds = 120;
+
   CameraController? _cameraController;
   List<CameraDescription> _cameras = [];
   bool _isCameraInitialized = false;
   bool _isProcessingFrame = false;
 
   late final LivenessService _livenessService;
-  late final LivenessChallenge _currentChallenge;
-  late final String _challengeToken;
+  late LivenessChallenge _currentChallenge;
+  late String _challengeToken;
+  late DateTime _tokenIssuedAt;
+  Timer? _ttlTimer;
+  int _remainingSeconds = _tokenTtlSeconds;
 
   String _attendanceType = 'masuk'; // 'masuk' or 'pulang'
+  String? _preValidationError;
   String _livenessFeedback = 'Posisikan wajah Anda tepat di lingkaran kamera';
   bool _isLivenessPassed = false;
   bool _isCapturing = false;
@@ -39,9 +46,44 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
   void initState() {
     super.initState();
     _livenessService = LivenessService();
+    _issueFreshChallenge();
+    _initializeCamera();
+    _startTtlTimer();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkEligibility());
+  }
+
+  void _issueFreshChallenge() {
     _currentChallenge = LivenessService.generateRandomChallenge();
     _challengeToken = LivenessService.generateRandomToken();
-    _initializeCamera();
+    _tokenIssuedAt = DateTime.now();
+    _remainingSeconds = _tokenTtlSeconds;
+    _isLivenessPassed = false;
+    _livenessFeedback = 'Posisikan wajah Anda tepat di lingkaran kamera';
+  }
+
+  void _startTtlTimer() {
+    _ttlTimer?.cancel();
+    _ttlTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      final elapsed = DateTime.now().difference(_tokenIssuedAt).inSeconds;
+      final left = (_tokenTtlSeconds - elapsed).clamp(0, _tokenTtlSeconds);
+      if (left != _remainingSeconds) {
+        setState(() => _remainingSeconds = left);
+      }
+    });
+  }
+
+  bool get _isTokenExpired => _remainingSeconds <= 0;
+
+  Future<void> _checkEligibility() async {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    final attProv = Provider.of<AttendanceProvider>(context, listen: false);
+    final err = await attProv.validateAttendanceAttempt(
+      employeeId: auth.currentUser?.id ?? 1,
+      type: _attendanceType,
+    );
+    if (!mounted) return;
+    setState(() => _preValidationError = err);
   }
 
   Future<void> _initializeCamera() async {
@@ -49,7 +91,6 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
       _cameras = await availableCameras();
       if (_cameras.isEmpty) return;
 
-      // Select front camera if available
       final frontCamera = _cameras.firstWhere(
         (cam) => cam.lensDirection == CameraLensDirection.front,
         orElse: () => _cameras.first,
@@ -69,9 +110,8 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
         _isCameraInitialized = true;
       });
 
-      // Start streaming frames for Google ML Kit face liveness detection
       _cameraController!.startImageStream((CameraImage image) {
-        if (_isProcessingFrame || _isLivenessPassed || _isCapturing) return;
+        if (_isProcessingFrame || _isLivenessPassed || _isCapturing || _isTokenExpired) return;
         _processCameraFrame(image);
       });
     } catch (_) {
@@ -83,7 +123,6 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
     _isProcessingFrame = true;
 
     try {
-      // Build ML Kit InputImage from CameraImage
       final camera = _cameraController!.description;
       final sensorOrientation = camera.sensorOrientation;
 
@@ -128,30 +167,55 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
 
   Future<void> _takeAttendancePicture() async {
     if (_isCapturing) return;
-    if (_isCameraInitialized && !_isLivenessPassed) {
+    if (_isTokenExpired) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Harap selesaikan verifikasi Liveness wajah terlebih dahulu.'),
-          backgroundColor: AppTheme.accentOrange,
+          content: Text('Token tantangan kedaluwarsa (>120 detik). Tekan Refresh Token terlebih dahulu.'),
+          backgroundColor: AppTheme.accentRed,
         ),
       );
+      return;
+    }
+
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    final attProv = Provider.of<AttendanceProvider>(context, listen: false);
+    final settings = Provider.of<SettingsProvider>(context, listen: false);
+    final user = auth.currentUser;
+
+    final validationErr = await attProv.validateAttendanceAttempt(
+      employeeId: user?.id ?? 1,
+      type: _attendanceType,
+    );
+    if (validationErr != null) {
+      if (mounted) {
+        setState(() => _preValidationError = validationErr);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(validationErr), backgroundColor: AppTheme.accentRed),
+        );
+      }
+      return;
+    }
+
+    if (_isCameraInitialized && !_isLivenessPassed) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Harap selesaikan verifikasi Liveness wajah terlebih dahulu.'),
+            backgroundColor: AppTheme.accentOrange,
+          ),
+        );
+      }
       return;
     }
     setState(() => _isCapturing = true);
 
     try {
-      final auth = Provider.of<AuthProvider>(context, listen: false);
-      final attProv = Provider.of<AttendanceProvider>(context, listen: false);
-      final settings = Provider.of<SettingsProvider>(context, listen: false);
-      final user = auth.currentUser;
-
       String rawPath = '';
 
       if (_cameraController != null && _cameraController!.value.isInitialized) {
         final xFile = await _cameraController!.takePicture();
         rawPath = xFile.path;
       } else {
-        // Fallback for devices/emulators without camera hardware: generate a valid decodable JPG
         final tempDir = Directory.systemTemp;
         final dummyFile = File('${tempDir.path}/absensi_fallback_${DateTime.now().millisecondsSinceEpoch}.jpg');
         final canvas = img.Image(width: 480, height: 640);
@@ -161,7 +225,6 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
         rawPath = dummyFile.path;
       }
 
-      // Stamp anti-tamper watermark & cryptographic hash
       final watermarkResult = await ImageWatermarkService.stampWatermark(
         sourceImagePath: rawPath,
         employeeId: user?.id ?? 1,
@@ -182,6 +245,7 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
         validationHash: watermarkResult.validationHash,
         photoPath: watermarkResult.savedPath,
         isLivenessPassed: _isLivenessPassed,
+        deviceInfo: '${Platform.operatingSystem} ${Platform.operatingSystemVersion}'.trim(),
       );
 
       await attProv.recordAttendance(attendance);
@@ -189,11 +253,13 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
       await auth.logAction(
         'absensi_selfie',
         'Absensi $_attendanceType: ${user?.name} (${attendance.status.toUpperCase()}, Token: $_challengeToken)',
+        module: 'absensi',
+        objectId: _challengeToken,
       );
 
       if (!mounted) return;
+      _issueFreshChallenge();
 
-      // Show dialog with success & 1-tap WhatsApp Share to Owner
       showDialog(
         context: context,
         barrierDismissible: false,
@@ -249,7 +315,10 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Gagal merekam absensi: $e')),
+          SnackBar(
+            content: Text('Gagal merekam absensi: ${e.toString().replaceFirst("Bad state: ", "")}'),
+            backgroundColor: AppTheme.accentRed,
+          ),
         );
       }
     } finally {
@@ -259,6 +328,7 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
 
   @override
   void dispose() {
+    _ttlTimer?.cancel();
     _cameraController?.dispose();
     _livenessService.dispose();
     super.dispose();
@@ -267,6 +337,7 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
   @override
   Widget build(BuildContext context) {
     final challengeText = LivenessService.getChallengeInstruction(_currentChallenge);
+    final blocked = _preValidationError != null || _isTokenExpired;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -284,22 +355,28 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
                 children: [
                   Expanded(
                     child: ChoiceChip(
-                      label: const Text('Absen Masuk'),
+                      label: const Center(child: Text('Absen Masuk')),
                       selected: _attendanceType == 'masuk',
                       selectedColor: AppTheme.primaryGreenLight,
                       onSelected: (val) {
-                        if (val) setState(() => _attendanceType = 'masuk');
+                        if (val) {
+                          setState(() => _attendanceType = 'masuk');
+                          _checkEligibility();
+                        }
                       },
                     ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: ChoiceChip(
-                      label: const Text('Absen Pulang'),
+                      label: const Center(child: Text('Absen Pulang')),
                       selected: _attendanceType == 'pulang',
                       selectedColor: AppTheme.primaryGreenLight,
                       onSelected: (val) {
-                        if (val) setState(() => _attendanceType = 'pulang');
+                        if (val) {
+                          setState(() => _attendanceType = 'pulang');
+                          _checkEligibility();
+                        }
                       },
                     ),
                   ),
@@ -307,29 +384,64 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
               ),
             ),
 
-            // Dynamic Challenge Badge (Anti-AI Token)
+            if (_preValidationError != null)
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppTheme.accentRed.withValues(alpha: 0.9),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  _preValidationError!,
+                  style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+              ),
+
+            // Dynamic Challenge Badge (Anti-AI Token + TTL Countdown)
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.12),
+                color: Colors.white.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.amber.withOpacity(0.5)),
+                border: Border.all(
+                  color: _isTokenExpired ? AppTheme.accentRed : Colors.amber.withValues(alpha: 0.5),
+                ),
               ),
               child: Row(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.amber,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      'TOKEN: $_challengeToken',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.black),
-                    ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: _isTokenExpired ? AppTheme.accentRed : Colors.amber,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          'TOKEN: $_challengeToken',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12.5,
+                            color: _isTokenExpired ? Colors.white : Colors.black,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        _isTokenExpired ? 'Kedaluwarsa' : 'Sisa waktu: ${_remainingSeconds}s',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: _remainingSeconds <= 20 ? Colors.redAccent : Colors.amberAccent,
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -348,6 +460,13 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
                         ),
                       ],
                     ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.refresh_rounded, color: Colors.amberAccent),
+                    tooltip: 'Terbitkan Token Baru',
+                    onPressed: () {
+                      setState(() => _issueFreshChallenge());
+                    },
                   ),
                 ],
               ),
@@ -382,7 +501,6 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
                           ],
                         ),
 
-                      // Oval Face Guide Overlay
                       Container(
                         width: 220,
                         height: 280,
@@ -395,15 +513,14 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
                         ),
                       ),
 
-                      // Feedback Banner at Bottom of Preview
                       Positioned(
                         bottom: 12,
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                           decoration: BoxDecoration(
                             color: _isLivenessPassed
-                                ? Colors.green.withOpacity(0.85)
-                                : Colors.black.withOpacity(0.7),
+                                ? Colors.green.withValues(alpha: 0.85)
+                                : Colors.black.withValues(alpha: 0.7),
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: Row(
@@ -429,14 +546,13 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
               ),
             ),
 
-            // Shutter Button
             Padding(
-              padding: const EdgeInsets.only(bottom: 24, left: 24, right: 24),
+              padding: const EdgeInsets.only(bottom: 20, left: 20, right: 20),
               child: SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: _isLivenessPassed ? AppTheme.primaryGreen : Colors.grey.shade800,
+                    backgroundColor: (_isLivenessPassed && !blocked) ? AppTheme.primaryGreen : Colors.grey.shade800,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                   ),
                   icon: _isCapturing
@@ -449,14 +565,18 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
                   label: Text(
                     _isCapturing
                         ? 'MEMPROSES WATERMARK...'
-                        : _isCameraInitialized
-                            ? (_isLivenessPassed
-                                ? 'AMBIL FOTO ABSENSI'
-                                : 'SELESAIKAN VERIFIKASI WAJAH...')
-                            : 'KAMERA TIDAK TERSEDIA (MODE UJI)',
-                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                        : _isTokenExpired
+                            ? 'TOKEN KEDALUWARSA — REFRESH TOKEN'
+                            : _preValidationError != null
+                                ? 'ABSENSI DIBLOKIR VALIDASI'
+                                : _isCameraInitialized
+                                    ? (_isLivenessPassed
+                                        ? 'AMBIL FOTO ABSENSI'
+                                        : 'SELESAIKAN VERIFIKASI WAJAH...')
+                                    : 'SIMPAN ABSENSI (MODE TANPA KAMERA)',
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                   ),
-                  onPressed: (_isCapturing || (_isCameraInitialized && !_isLivenessPassed))
+                  onPressed: (_isCapturing || blocked || (_isCameraInitialized && !_isLivenessPassed))
                       ? null
                       : _takeAttendancePicture,
                 ),

@@ -155,6 +155,7 @@ class PrinterManager {
       storePhone: storePhone,
       config: receiptConfig,
       charWidth: target.escCharWidth,
+      logoPath: logoPath,
       autoCut: target.autoCut,
       openDrawer: !isReprint && target.openDrawer && transaction.paymentMethod == 'tunai',
     );
@@ -281,6 +282,66 @@ class PrinterManager {
       logoPath: logoPath,
     );
     return PrinterOperationResult(success: true, message: 'Invoice A4 dibuka via Print Service.');
+  }
+
+  static Future<PrinterOperationResult> printProductLabels({
+    required PrinterDeviceModel? printer,
+    required List<EscPosLabelItemAdapter> items,
+    required String storeName,
+    bool isQrCode = false,
+    bool showPrice = true,
+    bool showStoreName = true,
+    bool showSku = true,
+    double labelWidthMm = 40,
+    double labelHeightMm = 30,
+    bool isA4StickerGrid = false,
+  }) async {
+    if (items.isEmpty) {
+      return PrinterOperationResult(success: false, message: 'Tidak ada label produk yang dipilih.');
+    }
+
+    if (printer != null &&
+        printer.connectionType != PrinterConnectionType.system &&
+        printer.protocol == PrinterProtocol.escPos &&
+        !isA4StickerGrid) {
+      final bytes = EscPosGenerator.buildProductLabels(
+        items: items
+            .map((i) => ProductLabelItem(
+                  name: i.name,
+                  sku: i.sku,
+                  barcodeData: i.barcodeData,
+                  price: i.price,
+                  copyCount: i.copyCount,
+                ))
+            .toList(),
+        storeName: storeName,
+        charWidth: printer.escCharWidth,
+        isQrCode: isQrCode,
+        showStoreName: showStoreName,
+        showPrice: showPrice,
+        showSku: showSku,
+        autoCut: printer.autoCut,
+      );
+      return await adapterFor(printer).printRawBytes(bytes);
+    }
+
+    await ThermalPrinterService.printProductLabelsBatch(
+      items: items,
+      storeName: storeName,
+      isQrCode: isQrCode,
+      showPrice: showPrice,
+      showStoreName: showStoreName,
+      showSku: showSku,
+      labelWidthMm: labelWidthMm,
+      labelHeightMm: labelHeightMm,
+      isA4StickerGrid: isA4StickerGrid,
+    );
+    return PrinterOperationResult(
+      success: true,
+      message: isA4StickerGrid
+          ? 'Lembar stiker PDF A4 dibuka lewat Print Service.'
+          : 'Label stiker PDF dibuka lewat Print Service.',
+    );
   }
 
   static Future<PrinterOperationResult> openCashDrawer(PrinterDeviceModel? printer) async {

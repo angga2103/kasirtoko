@@ -30,17 +30,25 @@ class DebtProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<List<CustomerDebtPaymentModel>> getDebtPayments(int debtId) async {
+    return await DatabaseHelper.instance.getCustomerDebtPayments(debtId);
+  }
+
   Future<void> payDebt(
     int debtId,
     double amountPaid, {
+    String paymentMethod = 'tunai',
     int? shiftId,
     String cashierName = 'Kasir',
+    String note = '',
   }) async {
     await DatabaseHelper.instance.payCustomerDebt(
       debtId,
       amountPaid,
+      paymentMethod: paymentMethod,
       shiftId: shiftId,
       cashierName: cashierName,
+      note: note,
     );
     await loadDebts();
   }

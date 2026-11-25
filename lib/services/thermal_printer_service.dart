@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -7,20 +6,33 @@ import '../models/receipt_config.dart';
 import '../models/transaction.dart';
 import '../utils/currency_format.dart';
 import '../utils/date_format.dart';
+import 'printer/esc_pos_image_helper.dart';
+
+class EscPosLabelItemAdapter {
+  final String name;
+  final String sku;
+  final String barcodeData;
+  final double price;
+  final int copyCount;
+
+  const EscPosLabelItemAdapter({
+    required this.name,
+    required this.sku,
+    required this.barcodeData,
+    required this.price,
+    this.copyCount = 1,
+  });
+}
 
 class ThermalPrinterService {
   // ESC/POS Command to open cash drawer via RJ11 pulse
   static List<int> get openCashDrawerCommand => [0x1B, 0x70, 0x00, 0x19, 0xFA];
 
   static Future<pw.MemoryImage?> _loadLogo(String? logoPath) async {
-    if (logoPath == null || logoPath.isEmpty) return null;
-    try {
-      final f = File(logoPath);
-      if (await f.exists()) {
-        final bytes = await f.readAsBytes();
-        return pw.MemoryImage(bytes);
-      }
-    } catch (_) {}
+    final normalized = EscPosImageHelper.loadNormalizedPngBytes(logoPath, maxWidth: 360);
+    if (normalized != null && normalized.isNotEmpty) {
+      return pw.MemoryImage(normalized);
+    }
     return null;
   }
 
@@ -89,17 +101,20 @@ class ThermalPrinterService {
               children: [
                 if (logoImg != null) ...[
                   pw.Container(
-                    width: isA4 ? 54 : 34,
-                    height: isA4 ? 54 : 34,
+                    constraints: pw.BoxConstraints(
+                      maxWidth: isA4 ? 96 : (is80mm ? 84 : 68),
+                      maxHeight: isA4 ? 64 : 44,
+                    ),
                     child: pw.Image(logoImg, fit: pw.BoxFit.contain),
                   ),
                   pw.SizedBox(height: 3),
                 ],
-                pw.Text(
-                  storeName,
-                  style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: baseFont + 4),
-                  textAlign: alignLeft ? pw.TextAlign.left : pw.TextAlign.center,
-                ),
+                if (!(config.showLogo && config.hideStoreNameWithLogo && logoImg != null))
+                  pw.Text(
+                    storeName,
+                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: baseFont + 4),
+                    textAlign: alignLeft ? pw.TextAlign.left : pw.TextAlign.center,
+                  ),
                 if (config.showAddress && storeAddress.isNotEmpty)
                   pw.Text(
                     storeAddress,
@@ -318,74 +333,166 @@ class ThermalPrinterService {
     double labelWidthMm = 40,
     double labelHeightMm = 30,
   }) async {
-    final doc = pw.Document();
-
-    final pageFormat = PdfPageFormat(
-      labelWidthMm * PdfPageFormat.mm,
-      labelHeightMm * PdfPageFormat.mm,
-      marginAll: 1.5 * PdfPageFormat.mm,
+    return printProductLabelsBatch(
+      items: [
+        EscPosLabelItemAdapter(
+          name: product.name,
+          sku: product.code,
+          barcodeData: product.barcode.isNotEmpty ? product.barcode : product.code,
+          price: product.sellingPrice,
+          copyCount: copyCount,
+        ),
+      ],
+      storeName: storeName,
+      isQrCode: isQrCode,
+      showPrice: showPrice,
+      showStoreName: showStoreName,
+      labelWidthMm: labelWidthMm,
+      labelHeightMm: labelHeightMm,
     );
+  }
 
-    for (int i = 0; i < copyCount; i++) {
-      doc.addPage(
-        pw.Page(
-          pageFormat: pageFormat,
-          build: (pw.Context context) {
-            final barcodeData = product.barcode.isNotEmpty ? product.barcode : product.code;
+  static Future<void> printProductLabelsBatch({
+    required List<EscPosLabelItemAdapter> items,
+    required String storeName,
+    bool isQrCode = false,
+    bool showPrice = true,
+    bool showStoreName = true,
+    bool showSku = true,
+    double labelWidthMm = 40,
+    double labelHeightMm = 30,
+    bool isA4StickerGrid = false,
+  }) async {
+    final doc = pw.Document();
+    final expanded = <EscPosLabelItemAdapter>[];
+    for (final it in items) {
+      final cnt = it.copyCount.clamp(1, 200);
+      for (int c = 0; c < cnt; c++) {
+        expanded.add(it);
+      }
+    }
 
-            return pw.Center(
-              child: pw.Column(
-                mainAxisAlignment: pw.MainAxisAlignment.center,
-                crossAxisAlignment: pw.CrossAxisAlignment.center,
-                children: [
-                  if (showStoreName && storeName.isNotEmpty)
-                    pw.Text(
-                      storeName,
-                      style: pw.TextStyle(fontSize: 7, fontWeight: pw.FontWeight.bold),
-                      maxLines: 1,
-                    ),
-                  pw.Text(
-                    product.name,
-                    style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
-                    maxLines: 1,
-                    overflow: pw.TextOverflow.clip,
-                    textAlign: pw.TextAlign.center,
-                  ),
-                  pw.SizedBox(height: 2),
-                  if (isQrCode)
-                    pw.BarcodeWidget(
-                      barcode: pw.Barcode.qrCode(),
-                      data: barcodeData,
-                      width: 32,
-                      height: 32,
-                    )
-                  else
-                    pw.BarcodeWidget(
-                      barcode: pw.Barcode.code128(),
-                      data: barcodeData,
-                      width: labelWidthMm * 2,
-                      height: 18,
-                      drawText: true,
-                      textStyle: const pw.TextStyle(fontSize: 6.5),
-                    ),
-                  if (showPrice) ...[
-                    pw.SizedBox(height: 2),
-                    pw.Text(
-                      CurrencyHelper.format(product.sellingPrice),
-                      style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold),
-                    ),
-                  ],
-                ],
+    pw.Widget buildLabelTile(EscPosLabelItemAdapter item, {required double tileWmm, required double tileHmm}) {
+      final barcodeData = item.barcodeData.isNotEmpty ? item.barcodeData : item.sku;
+      final contentW = (tileWmm - 4) * PdfPageFormat.mm;
+      final qrSize = ((tileHmm - 14) * PdfPageFormat.mm).clamp(22.0, 44.0);
+      final barH = ((tileHmm - 15) * PdfPageFormat.mm).clamp(14.0, 24.0);
+
+      return pw.Container(
+        padding: const pw.EdgeInsets.all(2),
+        alignment: pw.Alignment.center,
+        child: pw.Column(
+          mainAxisAlignment: pw.MainAxisAlignment.center,
+          crossAxisAlignment: pw.CrossAxisAlignment.center,
+          mainAxisSize: pw.MainAxisSize.min,
+          children: [
+            if (showStoreName && storeName.isNotEmpty)
+              pw.Text(
+                storeName,
+                style: pw.TextStyle(fontSize: 6.5, fontWeight: pw.FontWeight.bold),
+                maxLines: 1,
               ),
-            );
-          },
+            pw.Text(
+              item.name,
+              style: pw.TextStyle(fontSize: 7.5, fontWeight: pw.FontWeight.bold),
+              maxLines: 1,
+              overflow: pw.TextOverflow.clip,
+              textAlign: pw.TextAlign.center,
+            ),
+            if (showSku && item.sku.isNotEmpty)
+              pw.Text(
+                'SKU: ${item.sku}',
+                style: const pw.TextStyle(fontSize: 6),
+                maxLines: 1,
+              ),
+            pw.SizedBox(height: 1.5),
+            if (isQrCode)
+              pw.BarcodeWidget(
+                barcode: pw.Barcode.qrCode(),
+                data: barcodeData,
+                width: qrSize,
+                height: qrSize,
+              )
+            else
+              pw.BarcodeWidget(
+                barcode: pw.Barcode.code128(),
+                data: barcodeData,
+                width: contentW,
+                height: barH,
+                drawText: true,
+                textStyle: const pw.TextStyle(fontSize: 6),
+              ),
+            if (showPrice) ...[
+              pw.SizedBox(height: 1.5),
+              pw.Text(
+                CurrencyHelper.format(item.price),
+                style: pw.TextStyle(fontSize: 8.5, fontWeight: pw.FontWeight.bold),
+              ),
+            ],
+          ],
         ),
       );
     }
 
+    if (isA4StickerGrid) {
+      const cols = 3;
+      const rowsPerPage = 7;
+      const perPage = cols * rowsPerPage;
+      for (int start = 0; start < expanded.length; start += perPage) {
+        final chunk = expanded.sublist(
+          start,
+          (start + perPage) > expanded.length ? expanded.length : (start + perPage),
+        );
+        doc.addPage(
+          pw.Page(
+            pageFormat: PdfPageFormat.a4,
+            margin: const pw.EdgeInsets.all(14),
+            build: (_) {
+              final tableRows = <pw.TableRow>[];
+              for (int r = 0; r < chunk.length; r += cols) {
+                final cells = <pw.Widget>[];
+                for (int c = 0; c < cols; c++) {
+                  final idx = r + c;
+                  if (idx < chunk.length) {
+                    cells.add(
+                      pw.Container(
+                        height: 36 * PdfPageFormat.mm,
+                        decoration: pw.BoxDecoration(
+                          border: pw.Border.all(color: PdfColors.grey300, width: 0.4),
+                        ),
+                        child: buildLabelTile(chunk[idx], tileWmm: 60, tileHmm: 35),
+                      ),
+                    );
+                  } else {
+                    cells.add(pw.SizedBox(height: 36 * PdfPageFormat.mm));
+                  }
+                }
+                tableRows.add(pw.TableRow(children: cells));
+              }
+              return pw.Table(children: tableRows);
+            },
+          ),
+        );
+      }
+    } else {
+      final pageFormat = PdfPageFormat(
+        labelWidthMm * PdfPageFormat.mm,
+        labelHeightMm * PdfPageFormat.mm,
+        marginAll: 1.5 * PdfPageFormat.mm,
+      );
+      for (final item in expanded) {
+        doc.addPage(
+          pw.Page(
+            pageFormat: pageFormat,
+            build: (_) => buildLabelTile(item, tileWmm: labelWidthMm, tileHmm: labelHeightMm),
+          ),
+        );
+      }
+    }
+
     await Printing.layoutPdf(
       onLayout: (PdfPageFormat format) async => doc.save(),
-      name: 'Label_${product.code}',
+      name: items.length == 1 ? 'Label_${items.first.sku}' : 'Batch_Labels_${expanded.length}',
     );
   }
 }

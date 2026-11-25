@@ -261,6 +261,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 },
               ),
               ListTile(
+                leading: const Icon(Icons.lock_reset_rounded, color: AppTheme.primaryGreen),
+                title: const Text('Ubah Password / PIN Akun'),
+                subtitle: const Text('Perbarui kredensial login Anda dengan verifikasi aman', style: TextStyle(fontSize: 11)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showChangeCredentialsDialog(context);
+                },
+              ),
+              ListTile(
                 leading: const Icon(Icons.logout_rounded, color: AppTheme.accentRed),
                 title: const Text('Keluar / Ganti Akun Karyawan', style: TextStyle(color: AppTheme.accentRed)),
                 onTap: () {
@@ -954,6 +963,177 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
+  }
+
+  void _showChangeCredentialsDialog(BuildContext hostContext) {
+    final auth = Provider.of<AuthProvider>(hostContext, listen: false);
+    final currCtrl = TextEditingController();
+    final passCtrl = TextEditingController();
+    final confirmPassCtrl = TextEditingController();
+    final pinCtrl = TextEditingController();
+    bool obscureCurr = true;
+    bool obscureNew = true;
+    bool isSaving = false;
+    String? errorMsg;
+
+    showDialog(
+      context: hostContext,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDState) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.lock_reset_rounded, color: AppTheme.primaryGreen),
+              SizedBox(width: 8),
+              Expanded(child: Text('Ubah Password & PIN Akun')),
+            ],
+          ),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Masukkan password atau PIN lama Anda untuk memverifikasi identitas sebelum memperbarui kredensial.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: currCtrl,
+                    obscureText: obscureCurr,
+                    decoration: InputDecoration(
+                      labelText: 'Password / PIN Lama *',
+                      prefixIcon: const Icon(Icons.lock_outline_rounded),
+                      suffixIcon: IconButton(
+                        icon: Icon(obscureCurr ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                        onPressed: () => setDState(() => obscureCurr = !obscureCurr),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: passCtrl,
+                    obscureText: obscureNew,
+                    decoration: InputDecoration(
+                      labelText: 'Password Baru (opsional jika hanya ubah PIN)',
+                      prefixIcon: const Icon(Icons.password_rounded),
+                      suffixIcon: IconButton(
+                        icon: Icon(obscureNew ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                        onPressed: () => setDState(() => obscureNew = !obscureNew),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: confirmPassCtrl,
+                    obscureText: obscureNew,
+                    decoration: const InputDecoration(
+                      labelText: 'Konfirmasi Password Baru',
+                      prefixIcon: Icon(Icons.verified_user_outlined),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: pinCtrl,
+                    obscureText: true,
+                    keyboardType: TextInputType.number,
+                    maxLength: 6,
+                    decoration: const InputDecoration(
+                      labelText: 'PIN Cepat Baru (4–6 digit, opsional)',
+                      prefixIcon: Icon(Icons.pin_outlined),
+                      counterText: '',
+                    ),
+                  ),
+                  if (errorMsg != null) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppTheme.accentRedSoft,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        errorMsg!,
+                        style: const TextStyle(fontSize: 12, color: AppTheme.accentRed, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: isSaving ? null : () => Navigator.pop(ctx),
+              child: const Text('Batal'),
+            ),
+            ElevatedButton(
+              onPressed: isSaving
+                  ? null
+                  : () async {
+                      final curr = currCtrl.text.trim();
+                      final np = passCtrl.text.trim();
+                      final cp = confirmPassCtrl.text.trim();
+                      final pin = pinCtrl.text.trim();
+                      if (curr.isEmpty) {
+                        setDState(() => errorMsg = 'Masukkan password atau PIN saat ini.');
+                        return;
+                      }
+                      if (np.isEmpty && pin.isEmpty) {
+                        setDState(() => errorMsg = 'Isi minimal Password Baru atau PIN Baru.');
+                        return;
+                      }
+                      if (np.isNotEmpty && np.length < 4) {
+                        setDState(() => errorMsg = 'Password baru minimal 4 karakter.');
+                        return;
+                      }
+                      if (np.isNotEmpty && np != cp) {
+                        setDState(() => errorMsg = 'Konfirmasi password baru tidak cocok.');
+                        return;
+                      }
+                      if (pin.isNotEmpty && (pin.length < 4 || pin.length > 6 || !RegExp(r'^\d+$').hasMatch(pin))) {
+                        setDState(() => errorMsg = 'PIN baru harus berupa 4–6 digit angka.');
+                        return;
+                      }
+                      setDState(() {
+                        isSaving = true;
+                        errorMsg = null;
+                      });
+                      final err = await auth.changeOwnCredentials(
+                        currentSecret: curr,
+                        newPassword: np.isEmpty ? null : np,
+                        newPin: pin.isEmpty ? null : pin,
+                      );
+                      if (!ctx.mounted) return;
+                      if (err != null) {
+                        setDState(() {
+                          isSaving = false;
+                          errorMsg = err;
+                        });
+                      } else {
+                        Navigator.pop(ctx);
+                        if (mounted) {
+                          ScaffoldMessenger.of(this.context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Kredensial login berhasil diperbarui dan dienkripsi aman.'),
+                              backgroundColor: AppTheme.success,
+                            ),
+                          );
+                        }
+                      }
+                    },
+              child: Text(isSaving ? 'Menyimpan...' : 'Simpan Kredensial'),
+            ),
+          ],
+        ),
+      ),
+    ).then((_) {
+      currCtrl.dispose();
+      passCtrl.dispose();
+      confirmPassCtrl.dispose();
+      pinCtrl.dispose();
+    });
   }
 }
 

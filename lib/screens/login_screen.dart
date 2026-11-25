@@ -14,7 +14,7 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  bool _usePasswordMode = false;
+  bool _usePinMode = false;
   String _pin = '';
   String? _errorMessage;
 
@@ -56,7 +56,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _attemptPinLogin() async {
     if (_pin.length < 4) {
-      setState(() => _errorMessage = 'Masukkan minimal 4 digit PIN.');
+      setState(() => _errorMessage = 'Masukkan minimal 4 digit PIN karyawan.');
       return;
     }
     final auth = Provider.of<AuthProvider>(context, listen: false);
@@ -70,7 +70,7 @@ class _LoginScreenState extends State<LoginScreen> {
       );
     } else {
       setState(() {
-        _errorMessage = 'PIN tidak cocok atau akun nonaktif.';
+        _errorMessage = 'PIN tidak sesuai atau akun sedang dinonaktifkan.';
         _pin = '';
       });
     }
@@ -98,255 +98,412 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  void _showPasswordRecoveryDialog() {
+    final ownerUserCtrl = TextEditingController();
+    final ownerSecretCtrl = TextEditingController();
+    final targetUserCtrl = TextEditingController();
+    final newPwCtrl = TextEditingController();
+    final newPinCtrl = TextEditingController();
+    String? dialogErr;
+    bool busy = false;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDState) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.lock_reset_rounded, color: AppTheme.primaryGreen),
+              SizedBox(width: 8),
+              Flexible(child: Text('Pemulihan Password / PIN')),
+            ],
+          ),
+          content: SizedBox(
+            width: 420,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Otorisasi diperlukan. Masukkan kredensial akun Pemilik (Owner) aktif untuk mereset password atau PIN karyawan secara aman.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: ownerUserCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Username Pemilik (Owner) *',
+                      prefixIcon: Icon(Icons.verified_user_outlined),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: ownerSecretCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Password atau PIN Owner *',
+                      prefixIcon: Icon(Icons.key_outlined),
+                    ),
+                  ),
+                  const Divider(height: 20),
+                  TextField(
+                    controller: targetUserCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Username Akun yang Dipulihkan *',
+                      prefixIcon: Icon(Icons.person_outline),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: newPwCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Password Baru (min. 4 karakter) *',
+                      prefixIcon: Icon(Icons.lock_outline),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: newPinCtrl,
+                    keyboardType: TextInputType.number,
+                    maxLength: 6,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'PIN Cepat Baru (4-6 digit, opsional)',
+                      counterText: '',
+                      prefixIcon: Icon(Icons.dialpad_rounded),
+                    ),
+                  ),
+                  if (dialogErr != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      dialogErr!,
+                      style: const TextStyle(color: AppTheme.accentRed, fontSize: 12, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: busy ? null : () => Navigator.pop(ctx),
+              child: const Text('Batal'),
+            ),
+            ElevatedButton(
+              onPressed: busy
+                  ? null
+                  : () async {
+                      setDState(() {
+                        busy = true;
+                        dialogErr = null;
+                      });
+                      final err = await Provider.of<AuthProvider>(context, listen: false).recoverPasswordByOwner(
+                        ownerUsername: ownerUserCtrl.text,
+                        ownerSecret: ownerSecretCtrl.text,
+                        targetUsername: targetUserCtrl.text,
+                        newPassword: newPwCtrl.text,
+                        newPin: newPinCtrl.text,
+                      );
+                      if (err != null) {
+                        setDState(() {
+                          busy = false;
+                          dialogErr = err;
+                        });
+                      } else if (ctx.mounted) {
+                        Navigator.pop(ctx);
+                        ScaffoldMessenger.of(this.context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Password / PIN akun berhasil diperbarui. Silakan login kembali.'),
+                            backgroundColor: AppTheme.success,
+                          ),
+                        );
+                      }
+                    },
+              child: Text(busy ? 'MEMPROSES...' : 'Simpan Password Baru'),
+            ),
+          ],
+        ),
+      ),
+    ).whenComplete(() {
+      Future.delayed(const Duration(milliseconds: 300), () {
+        ownerUserCtrl.dispose();
+        ownerSecretCtrl.dispose();
+        targetUserCtrl.dispose();
+        newPwCtrl.dispose();
+        newPinCtrl.dispose();
+      });
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = Provider.of<SettingsProvider>(context);
     final auth = Provider.of<AuthProvider>(context);
     final logoFile = settings.logoPath.isNotEmpty ? File(settings.logoPath) : null;
     final hasLogo = logoFile != null && logoFile.existsSync();
+    final isWideTablet = MediaQuery.sizeOf(context).width >= AppBreakpoints.tablet;
+
+    final brandPanel = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: isWideTablet ? 96 : 76,
+          height: isWideTablet ? 96 : 76,
+          padding: hasLogo ? EdgeInsets.zero : const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
+            border: Border.all(color: AppTheme.primaryGreenLight.withValues(alpha: 0.5), width: 2),
+            boxShadow: [
+              BoxShadow(
+                color: AppTheme.primaryGreen.withValues(alpha: 0.2),
+                blurRadius: 20,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: hasLogo
+              ? Image.file(logoFile, fit: BoxFit.contain)
+              : const Icon(Icons.point_of_sale_rounded, size: 42, color: AppTheme.primaryGreen),
+        ),
+        const SizedBox(height: 14),
+        Text(
+          settings.storeName,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: isWideTablet ? 24 : 20,
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+            letterSpacing: 0.2,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '${settings.businessType.label} • ${settings.branchName}',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12.5, color: Colors.white70),
+        ),
+      ],
+    );
+
+    final authCard = Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.22),
+            blurRadius: 24,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Masuk ke Sistem Kasir',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: AppTheme.textDark),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Autentikasi karyawan terenkripsi untuk memulai operasional',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 11.5, color: AppTheme.textMuted),
+          ),
+          const SizedBox(height: 16),
+
+          // Minimalist segmented switch: Username & Password vs PIN
+          Container(
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: AppTheme.lightGreyBg,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppTheme.borderLight),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _ModeTab(
+                    label: 'Password',
+                    icon: Icons.lock_outline_rounded,
+                    selected: !_usePinMode,
+                    onTap: () => setState(() {
+                      _usePinMode = false;
+                      _errorMessage = null;
+                    }),
+                  ),
+                ),
+                Expanded(
+                  child: _ModeTab(
+                    label: 'PIN Cepat',
+                    icon: Icons.dialpad_rounded,
+                    selected: _usePinMode,
+                    onTap: () => setState(() {
+                      _usePinMode = true;
+                      _errorMessage = null;
+                    }),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
+
+          if (!_usePinMode) ...[
+            TextField(
+              controller: _usernameCtrl,
+              textInputAction: TextInputAction.next,
+              decoration: const InputDecoration(
+                labelText: 'Username Karyawan',
+                prefixIcon: Icon(Icons.person_outline_rounded),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _passwordCtrl,
+              obscureText: _obscurePassword,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _attemptPasswordLogin(),
+              decoration: InputDecoration(
+                labelText: 'Password',
+                prefixIcon: const Icon(Icons.lock_outline_rounded),
+                suffixIcon: IconButton(
+                  icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off),
+                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                ),
+              ),
+            ),
+            if (_errorMessage != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                _errorMessage!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: AppTheme.accentRed,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: auth.isLoading ? null : _attemptPasswordLogin,
+              icon: const Icon(Icons.login_rounded),
+              label: Text(auth.isLoading ? 'MEMVERIFIKASI...' : 'MASUK'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+            ),
+          ] else ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(6, (index) {
+                final filled = index < _pin.length;
+                return Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 6),
+                  width: 14,
+                  height: 14,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: filled ? AppTheme.primaryGreen : Colors.grey.shade200,
+                    border: Border.all(
+                      color: filled ? AppTheme.primaryGreen : Colors.grey.shade400,
+                      width: 1.5,
+                    ),
+                  ),
+                );
+              }),
+            ),
+            if (_errorMessage != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                _errorMessage!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: AppTheme.accentRed,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+            const SizedBox(height: 16),
+            _buildKeyRow(['1', '2', '3']),
+            const SizedBox(height: 8),
+            _buildKeyRow(['4', '5', '6']),
+            const SizedBox(height: 8),
+            _buildKeyRow(['7', '8', '9']),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildActionButton(icon: Icons.clear_rounded, onTap: _onClear, label: 'C'),
+                _buildNumberButton('0'),
+                _buildActionButton(icon: Icons.backspace_rounded, onTap: _onBackspace),
+              ],
+            ),
+            const SizedBox(height: 14),
+            ElevatedButton.icon(
+              onPressed: auth.isLoading ? null : _attemptPinLogin,
+              icon: const Icon(Icons.login_rounded),
+              label: Text(auth.isLoading ? 'MEMVERIFIKASI...' : 'MASUK DENGAN PIN'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 10),
+          TextButton.icon(
+            onPressed: _showPasswordRecoveryDialog,
+            icon: const Icon(Icons.lock_reset_rounded, size: 17, color: AppTheme.textSecondary),
+            label: const Text(
+              'Lupa Password atau PIN? Pulihkan dengan Otorisasi Owner',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+            ),
+          ),
+        ],
+      ),
+    );
 
     return Scaffold(
       backgroundColor: AppTheme.darkBg,
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 420),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    width: 80,
-                    height: 80,
-                    padding: hasLogo ? EdgeInsets.zero : const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: AppTheme.primaryGreen.withValues(alpha: 0.2),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: AppTheme.primaryGreenLight.withValues(alpha: 0.4)),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: hasLogo
-                        ? Image.file(logoFile, fit: BoxFit.cover)
-                        : const Icon(
-                            Icons.point_of_sale_rounded,
-                            size: 46,
-                            color: AppTheme.primaryGreenLight,
-                          ),
-                  ),
-                  const SizedBox(height: 14),
-                  Text(
-                    settings.storeName,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${settings.businessType.label} • ${settings.branchName}',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 12.5, color: Colors.white70),
-                  ),
-                  const SizedBox(height: 20),
-
-                  // Mode Toggle (PIN Cepat vs Username & Password)
-                  Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: _ModeTab(
-                            label: 'PIN Cepat',
-                            icon: Icons.dialpad_rounded,
-                            selected: !_usePasswordMode,
-                            onTap: () => setState(() {
-                              _usePasswordMode = false;
-                              _errorMessage = null;
-                            }),
-                          ),
-                        ),
-                        Expanded(
-                          child: _ModeTab(
-                            label: 'Username & Password',
-                            icon: Icons.lock_outline_rounded,
-                            selected: _usePasswordMode,
-                            onTap: () => setState(() {
-                              _usePasswordMode = true;
-                              _errorMessage = null;
-                            }),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 22),
-
-                  if (!_usePasswordMode) ...[
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: List.generate(6, (index) {
-                        final filled = index < _pin.length;
-                        return Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 7),
-                          width: 16,
-                          height: 16,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: filled ? AppTheme.primaryGreenLight : Colors.white24,
-                            border: Border.all(
-                              color: filled ? AppTheme.primaryGreenLight : Colors.white38,
-                              width: 1.5,
-                            ),
-                          ),
-                        );
-                      }),
-                    ),
-                    if (_errorMessage != null) ...[
-                      const SizedBox(height: 12),
-                      Text(
-                        _errorMessage!,
-                        style: const TextStyle(
-                          color: AppTheme.accentRed,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 22),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 300),
-                      child: Column(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF0F172A), Color(0xFF134E4A)],
+          ),
+        ),
+        child: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: isWideTablet ? 860 : 420),
+                child: isWideTablet
+                    ? Row(
                         children: [
-                          _buildKeyRow(['1', '2', '3']),
-                          const SizedBox(height: 10),
-                          _buildKeyRow(['4', '5', '6']),
-                          const SizedBox(height: 10),
-                          _buildKeyRow(['7', '8', '9']),
-                          const SizedBox(height: 10),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                            children: [
-                              _buildActionButton(icon: Icons.clear_rounded, onTap: _onClear, label: 'C'),
-                              _buildNumberButton('0'),
-                              _buildActionButton(icon: Icons.backspace_rounded, onTap: _onBackspace),
-                            ],
-                          ),
-                          const SizedBox(height: 16),
-                          SizedBox(
-                            width: double.infinity,
-                            child: ElevatedButton.icon(
-                              onPressed: auth.isLoading ? null : _attemptPinLogin,
-                              icon: const Icon(Icons.login_rounded),
-                              label: Text(auth.isLoading ? 'MEMERIKSA...' : 'MASUK DENGAN PIN'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: AppTheme.primaryGreenLight,
-                                foregroundColor: Colors.black87,
-                                padding: const EdgeInsets.symmetric(vertical: 14),
-                              ),
-                            ),
-                          ),
+                          Expanded(flex: 5, child: Padding(padding: const EdgeInsets.all(16), child: brandPanel)),
+                          const SizedBox(width: 24),
+                          Expanded(flex: 6, child: authCard),
+                        ],
+                      )
+                    : Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          brandPanel,
+                          const SizedBox(height: 22),
+                          authCard,
                         ],
                       ),
-                    ),
-                  ] else ...[
-                    Container(
-                      padding: const EdgeInsets.all(18),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Column(
-                        children: [
-                          TextField(
-                            controller: _usernameCtrl,
-                            textInputAction: TextInputAction.next,
-                            decoration: const InputDecoration(
-                              labelText: 'Username',
-                              hintText: 'Contoh: owner / kasir / teknisi',
-                              prefixIcon: Icon(Icons.person_outline_rounded),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          TextField(
-                            controller: _passwordCtrl,
-                            obscureText: _obscurePassword,
-                            textInputAction: TextInputAction.done,
-                            onSubmitted: (_) => _attemptPasswordLogin(),
-                            decoration: InputDecoration(
-                              labelText: 'Password',
-                              prefixIcon: const Icon(Icons.lock_outline_rounded),
-                              suffixIcon: IconButton(
-                                icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off),
-                                onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                              ),
-                            ),
-                          ),
-                          if (_errorMessage != null) ...[
-                            const SizedBox(height: 10),
-                            Text(
-                              _errorMessage!,
-                              style: const TextStyle(
-                                color: AppTheme.accentRed,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                          const SizedBox(height: 16),
-                          SizedBox(
-                            width: double.infinity,
-                            child: ElevatedButton.icon(
-                              onPressed: auth.isLoading ? null : _attemptPasswordLogin,
-                              icon: const Icon(Icons.login_rounded),
-                              label: Text(auth.isLoading ? 'MEMERIKSA...' : 'MASUK'),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-
-                  const SizedBox(height: 22),
-
-                  // Quick Login Chips for Demo/Testing
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.06),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.white12),
-                    ),
-                    child: Column(
-                      children: [
-                        const Text(
-                          'Akses Cepat Akun Bawaan (PIN = Password awal):',
-                          style: TextStyle(color: Colors.white70, fontSize: 11.5),
-                        ),
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          alignment: WrapAlignment.center,
-                          children: [
-                            _buildQuickRoleChip('Owner: 123456', '123456'),
-                            _buildQuickRoleChip('Supervisor: 3333', '3333'),
-                            _buildQuickRoleChip('Kasir: 1111', '1111'),
-                            _buildQuickRoleChip('Gudang: 2222', '2222'),
-                            _buildQuickRoleChip('Teknisi: 4444', '4444'),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
               ),
             ),
           ),
@@ -365,19 +522,19 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget _buildNumberButton(String text) {
     return InkWell(
       onTap: () => _onKeyPress(text),
-      borderRadius: BorderRadius.circular(36),
+      borderRadius: BorderRadius.circular(30),
       child: Container(
-        width: 66,
-        height: 66,
+        width: 58,
+        height: 58,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: Colors.white.withValues(alpha: 0.09),
-          border: Border.all(color: Colors.white12),
+          color: AppTheme.lightGreyBg,
+          border: Border.all(color: AppTheme.borderLight),
         ),
         alignment: Alignment.center,
         child: Text(
           text,
-          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
+          style: const TextStyle(fontSize: 21, fontWeight: FontWeight.bold, color: AppTheme.textDark),
         ),
       ),
     );
@@ -390,47 +547,21 @@ class _LoginScreenState extends State<LoginScreen> {
   }) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(36),
+      borderRadius: BorderRadius.circular(30),
       child: Container(
-        width: 66,
-        height: 66,
+        width: 58,
+        height: 58,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: Colors.white.withValues(alpha: 0.04),
+          color: Colors.grey.shade100,
         ),
         alignment: Alignment.center,
         child: label != null
             ? Text(
                 label,
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white70),
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.textSecondary),
               )
-            : Icon(icon, color: Colors.white70, size: 22),
-      ),
-    );
-  }
-
-  Widget _buildQuickRoleChip(String label, String pin) {
-    return InkWell(
-      onTap: () {
-        setState(() => _pin = pin);
-        _attemptPinLogin();
-      },
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: AppTheme.primaryGreen.withValues(alpha: 0.35),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppTheme.primaryGreenLight.withValues(alpha: 0.5)),
-        ),
-        child: Text(
-          label,
-          style: const TextStyle(
-            color: AppTheme.primaryGreenLight,
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+            : Icon(icon, color: AppTheme.textSecondary, size: 20),
       ),
     );
   }
@@ -454,7 +585,7 @@ class _ModeTab extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 8),
         decoration: BoxDecoration(
           color: selected ? AppTheme.primaryGreen : Colors.transparent,
           borderRadius: BorderRadius.circular(9),
@@ -462,13 +593,13 @@ class _ModeTab extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, size: 16, color: selected ? Colors.white : Colors.white60),
+            Icon(icon, size: 15, color: selected ? Colors.white : AppTheme.textMuted),
             const SizedBox(width: 6),
             Flexible(
               child: Text(
                 label,
                 style: TextStyle(
-                  color: selected ? Colors.white : Colors.white60,
+                  color: selected ? Colors.white : AppTheme.textMuted,
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
                 ),
