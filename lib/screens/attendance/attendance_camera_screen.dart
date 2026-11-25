@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:image/image.dart' as img;
 import 'package:provider/provider.dart';
 import '../../models/attendance.dart';
 import '../../providers/auth_provider.dart';
@@ -127,6 +128,15 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
 
   Future<void> _takeAttendancePicture() async {
     if (_isCapturing) return;
+    if (_isCameraInitialized && !_isLivenessPassed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Harap selesaikan verifikasi Liveness wajah terlebih dahulu.'),
+          backgroundColor: AppTheme.accentOrange,
+        ),
+      );
+      return;
+    }
     setState(() => _isCapturing = true);
 
     try {
@@ -141,10 +151,13 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
         final xFile = await _cameraController!.takePicture();
         rawPath = xFile.path;
       } else {
-        // Fallback for emulator / simulator: generate a blank placeholder image to test
+        // Fallback for devices/emulators without camera hardware: generate a valid decodable JPG
         final tempDir = Directory.systemTemp;
-        final dummyFile = File('${tempDir.path}/dummy_selfie.jpg');
-        await dummyFile.writeAsBytes([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+        final dummyFile = File('${tempDir.path}/absensi_fallback_${DateTime.now().millisecondsSinceEpoch}.jpg');
+        final canvas = img.Image(width: 480, height: 640);
+        img.fill(canvas, color: img.ColorRgb8(28, 38, 56));
+        img.fillCircle(canvas, x: 240, y: 260, radius: 90, color: img.ColorRgb8(64, 84, 114));
+        await dummyFile.writeAsBytes(img.encodeJpg(canvas, quality: 85));
         rawPath = dummyFile.path;
       }
 
@@ -436,10 +449,16 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
                   label: Text(
                     _isCapturing
                         ? 'MEMPROSES WATERMARK...'
-                        : (_isLivenessPassed ? 'AMBIL FOTO ABSENSI' : 'VERIFIKASI & AMBIL FOTO'),
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        : _isCameraInitialized
+                            ? (_isLivenessPassed
+                                ? 'AMBIL FOTO ABSENSI'
+                                : 'SELESAIKAN VERIFIKASI WAJAH...')
+                            : 'KAMERA TIDAK TERSEDIA (MODE UJI)',
+                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                   ),
-                  onPressed: _isCapturing ? null : _takeAttendancePicture,
+                  onPressed: (_isCapturing || (_isCameraInitialized && !_isLivenessPassed))
+                      ? null
+                      : _takeAttendancePicture,
                 ),
               ),
             ),

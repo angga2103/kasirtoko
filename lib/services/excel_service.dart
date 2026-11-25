@@ -20,7 +20,6 @@ class ExcelImportResult {
 }
 
 class ExcelService {
-  // Parse imported Excel file into List<ProductModel>
   static Future<List<ProductModel>> pickAndParseProductsExcel() async {
     final pickedFile = await FilePicker.pickFile(
       type: FileType.custom,
@@ -35,11 +34,10 @@ class ExcelService {
     final bytes = await file.readAsBytes();
     final excel = Excel.decodeBytes(bytes);
 
-    List<ProductModel> products = [];
+    final List<ProductModel> products = [];
 
     for (final table in excel.tables.keys) {
       final sheet = excel.tables[table]!;
-      // Skip header row at index 0
       for (int rowIndex = 1; rowIndex < sheet.rows.length; rowIndex++) {
         final row = sheet.rows[rowIndex];
         if (row.isEmpty || row[0] == null) continue;
@@ -52,7 +50,7 @@ class ExcelService {
           final category = row.length > 2 ? row[2]?.value?.toString().trim() ?? 'Umum' : 'Umum';
           final barcode = row.length > 3 ? row[3]?.value?.toString().trim() ?? '' : '';
           final baseUnit = row.length > 4 ? row[4]?.value?.toString().trim() ?? 'Pcs' : 'Pcs';
-          
+
           final costPrice = row.length > 5
               ? double.tryParse(row[5]?.value?.toString() ?? '0') ?? 0.0
               : 0.0;
@@ -66,7 +64,9 @@ class ExcelService {
               ? double.tryParse(row[8]?.value?.toString() ?? '5') ?? 5.0
               : 5.0;
           final isServiceStr = row.length > 9 ? row[9]?.value?.toString().trim() ?? '0' : '0';
-          final isService = isServiceStr == '1' || isServiceStr.toLowerCase() == 'ya';
+          final isService = isServiceStr == '1' ||
+              isServiceStr.toLowerCase() == 'ya' ||
+              isServiceStr.toLowerCase() == 'jasa';
 
           products.add(
             ProductModel(
@@ -84,19 +84,17 @@ class ExcelService {
           );
         } catch (_) {}
       }
-      break; // Only read the first sheet
+      break;
     }
 
     return products;
   }
 
-  // Export product catalog to Excel and share
   static Future<String> exportProductsToExcel(List<ProductModel> products) async {
     final excel = Excel.createExcel();
     final sheet = excel['Master Produk'];
-    excel.delete('Sheet1'); // Remove default sheet
+    excel.delete('Sheet1');
 
-    // Header
     sheet.appendRow([
       TextCellValue('Kode Produk'),
       TextCellValue('Nama Produk'),
@@ -132,11 +130,15 @@ class ExcelService {
     final file = File('${tempDir.path}/Master_Produk_${DateTime.now().millisecondsSinceEpoch}.xlsx');
     await file.writeAsBytes(bytes);
 
-    await Share.shareXFiles([XFile(file.path)], text: 'Export Master Produk KasirToko');
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(file.path)],
+        text: 'Export Master Produk KasirToko',
+      ),
+    );
     return file.path;
   }
 
-  // Export Sales Report to Excel
   static Future<String> exportTransactionsToExcel(List<TransactionModel> transactions) async {
     final excel = Excel.createExcel();
     final sheet = excel['Laporan Penjualan'];
@@ -150,6 +152,7 @@ class ExcelService {
       TextCellValue('Metode Bayar'),
       TextCellValue('Subtotal'),
       TextCellValue('Diskon'),
+      TextCellValue('Pajak'),
       TextCellValue('Total Transaksi'),
       TextCellValue('Status'),
     ]);
@@ -163,6 +166,7 @@ class ExcelService {
         TextCellValue(t.paymentMethod.toUpperCase()),
         DoubleCellValue(t.subtotal),
         DoubleCellValue(t.discountTotal),
+        DoubleCellValue(t.taxAmount),
         DoubleCellValue(t.grandTotal),
         TextCellValue(t.status),
       ]);
@@ -175,7 +179,12 @@ class ExcelService {
     final file = File('${tempDir.path}/Laporan_Penjualan_${DateTime.now().millisecondsSinceEpoch}.xlsx');
     await file.writeAsBytes(bytes);
 
-    await Share.shareXFiles([XFile(file.path)], text: 'Export Laporan Penjualan KasirToko');
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(file.path)],
+        text: 'Export Laporan Penjualan KasirToko',
+      ),
+    );
     return file.path;
   }
 }

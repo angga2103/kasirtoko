@@ -28,6 +28,13 @@ class _StockOpnameScreenState extends State<StockOpnameScreen> {
     _loadHistory();
   }
 
+  @override
+  void dispose() {
+    _physicalStockCtrl.dispose();
+    _noteCtrl.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadHistory() async {
     final list = await DatabaseHelper.instance.getStockOpnames();
     setState(() {
@@ -125,7 +132,7 @@ class _StockOpnameScreenState extends State<StockOpnameScreen> {
                     isExpanded: true,
                     value: _selectedProduct,
                     decoration: const InputDecoration(labelText: 'Pilih Produk untuk Di-audit *'),
-                    items: productProv.products.where((p) => !p.isService).map((p) {
+                    items: productProv.allProducts.where((p) => !p.isService).map((p) {
                       return DropdownMenuItem(
                         value: p,
                         child: Text('${p.name} (Stok Sistem: ${p.stock.toInt()} ${p.baseUnit})'),

@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../models/transaction.dart';
+import '../../models/user.dart';
 import '../../database/db_helper.dart';
-import '../../providers/settings_provider.dart';
+import '../../providers/auth_provider.dart';
 import '../../providers/cash_flow_provider.dart';
+import '../../providers/product_provider.dart';
+import '../../providers/settings_provider.dart';
 import '../../services/whatsapp_service.dart';
 import '../../services/excel_service.dart';
 import '../../utils/app_theme.dart';
 import '../../utils/currency_format.dart';
 import '../../utils/date_format.dart';
+import '../pos/receipt_dialog.dart';
 
 class DailyReportScreen extends StatefulWidget {
   const DailyReportScreen({super.key});
@@ -29,21 +33,27 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
 
   Future<void> _loadData() async {
     final list = await DatabaseHelper.instance.getRecentTransactions(limit: 100);
+    if (!mounted) return;
     setState(() {
       _transactions = list;
       _isLoading = false;
     });
   }
 
-  double get _totalSales =>
-      _transactions.where((t) => t.status != 'voided').fold(0.0, (sum, t) => sum + t.grandTotal);
+  double get _totalSales => _transactions
+      .where((t) => t.status != 'voided' && t.status != 'void')
+      .fold(0.0, (sum, t) => sum + t.grandTotal);
+
+  int get _validTrxCount =>
+      _transactions.where((t) => t.status != 'voided' && t.status != 'void').length;
 
   double get _totalGrossProfit {
     double profit = 0.0;
-    for (final t in _transactions.where((t) => t.status != 'voided')) {
+    for (final t in _transactions.where((t) => t.status != 'voided' && t.status != 'void')) {
       for (final item in t.items) {
         if (!item.isService) {
-          profit += (item.unitPrice - item.costPrice) * item.qty;
+          profit +=
+              (item.unitPrice - (item.costPrice * item.conversionFactor)) * item.qty - item.discount;
         } else {
           profit += item.subtotal;
         }
@@ -52,10 +62,104 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
     return profit;
   }
 
+  Future<void> _showTransactionActions(TransactionModel t) async {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    final cashFlow = Provider.of<CashFlowProvider>(context, listen: false);
+    final productProv = Provider.of<ProductProvider>(context, listen: false);
+    final isVoid = t.status == 'voided' || t.status == 'void';
+
+    await showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                title: Text(
+                  t.invoiceNumber,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: Text(
+                  '${DateHelper.formatFull(t.date)} • ${CurrencyHelper.format(t.grandTotal)}',
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.receipt_long_rounded, color: AppTheme.primaryGreen),
+                title: const Text('Lihat & Cetak Ulang Struk'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  showDialog(
+                    context: context,
+                    builder: (_) => ReceiptDialog(transaction: t, isReprint: true),
+                  );
+                },
+              ),
+              if (!isVoid && auth.hasPermission(AppPermissions.voidTransaction))
+                ListTile(
+                  leading: const Icon(Icons.cancel_rounded, color: AppTheme.accentRed),
+                  title: const Text(
+                    'Batalkan Transaksi (VOID)',
+                    style: TextStyle(color: AppTheme.accentRed, fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: const Text('Mengembalikan stok item & menyesuaikan kas shift aktif'),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    final confirm = await showDialog<bool>(
+                      context: context,
+                      builder: (dCtx) => AlertDialog(
+                        title: const Text('Batalkan Transaksi?'),
+                        content: Text(
+                          'Nota ${t.invoiceNumber} senilai ${CurrencyHelper.format(t.grandTotal)} akan dibatalkan dan stok barang akan dikembalikan.',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(dCtx, false),
+                            child: const Text('Batal'),
+                          ),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accentRed),
+                            onPressed: () => Navigator.pop(dCtx, true),
+                            child: const Text('YA, VOID'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (confirm == true && t.id != null) {
+                      await DatabaseHelper.instance.voidTransaction(
+                        t.id!,
+                        shiftId: cashFlow.currentShift?.id,
+                      );
+                      await auth.logAction(
+                        'void_transaksi',
+                        'Membatalkan nota ${t.invoiceNumber} senilai ${CurrencyHelper.format(t.grandTotal)}',
+                      );
+                      await productProv.loadProducts();
+                      await cashFlow.checkOpenShift();
+                      await _loadData();
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Transaksi ${t.invoiceNumber} berhasil di-VOID.')),
+                        );
+                      }
+                    }
+                  },
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = Provider.of<SettingsProvider>(context);
     final cashFlow = Provider.of<CashFlowProvider>(context);
+    final auth = Provider.of<AuthProvider>(context);
+    final canViewProfit = auth.hasPermission(AppPermissions.viewProfit);
 
     return Scaffold(
       appBar: AppBar(
@@ -97,12 +201,19 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
                       ),
                       const SizedBox(width: 10),
                       Expanded(
-                        child: _buildMetricCard(
-                          title: 'Estimasi Laba Kotor',
-                          value: CurrencyHelper.format(_totalGrossProfit),
-                          icon: Icons.trending_up_rounded,
-                          color: Colors.teal,
-                        ),
+                        child: canViewProfit
+                            ? _buildMetricCard(
+                                title: 'Estimasi Laba Kotor',
+                                value: CurrencyHelper.format(_totalGrossProfit),
+                                icon: Icons.trending_up_rounded,
+                                color: Colors.teal,
+                              )
+                            : _buildMetricCard(
+                                title: 'Transaksi Valid',
+                                value: '$_validTrxCount Nota',
+                                icon: Icons.check_circle_rounded,
+                                color: Colors.teal,
+                              ),
                       ),
                     ],
                   ),
@@ -148,16 +259,24 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
                       ),
                       onPressed: () async {
                         if (cashFlow.currentShift != null) {
+                          final stats = await cashFlow.getActiveShiftStats();
                           await WhatsAppService.sendShiftReportToAdmin(
                             shift: cashFlow.currentShift!,
                             ownerPhone: settings.ownerPhone,
                             storeName: settings.storeName,
-                            totalTransactions: _transactions.length,
-                            totalGrossProfit: _totalGrossProfit,
+                            totalTransactions: (stats['totalTransactions'] as int?) ?? _validTrxCount,
+                            totalGrossProfit: canViewProfit
+                                ? ((stats['totalGrossProfit'] as num?)?.toDouble() ?? _totalGrossProfit)
+                                : 0.0,
                           );
                         } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Buka shift terlebih dahulu untuk mengirim laporan lengkap.')),
+                          await WhatsAppService.sendDailySummaryReport(
+                            ownerPhone: settings.ownerPhone,
+                            storeName: settings.storeName,
+                            reportedBy: auth.currentUser?.name ?? 'Admin',
+                            totalTransactions: _validTrxCount,
+                            totalSales: _totalSales,
+                            totalGrossProfit: canViewProfit ? _totalGrossProfit : null,
                           );
                         }
                       },
@@ -179,11 +298,12 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
                       separatorBuilder: (_, __) => const SizedBox(height: 6),
                       itemBuilder: (context, index) {
                         final t = _transactions[index];
-                        final isVoid = t.status == 'voided';
+                        final isVoid = t.status == 'voided' || t.status == 'void';
                         final isReturn = t.status == 'partial_return' || t.status == 'returned';
 
                         return Card(
                           child: ListTile(
+                            onTap: () => _showTransactionActions(t),
                             title: Text(
                               t.invoiceNumber,
                               style: TextStyle(
@@ -208,8 +328,12 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
                                     color: isVoid ? Colors.grey : AppTheme.primaryGreen,
                                   ),
                                 ),
-                                if (isReturn)
-                                  const Text('ADA RETUR', style: TextStyle(fontSize: 9, color: Colors.orange, fontWeight: FontWeight.bold)),
+                                if (isVoid)
+                                  const Text('VOID', style: TextStyle(fontSize: 9, color: Colors.red, fontWeight: FontWeight.bold))
+                                else if (isReturn)
+                                  const Text('ADA RETUR', style: TextStyle(fontSize: 9, color: Colors.orange, fontWeight: FontWeight.bold))
+                                else
+                                  const Text('Ketuk detail', style: TextStyle(fontSize: 9, color: AppTheme.textMuted)),
                               ],
                             ),
                           ),

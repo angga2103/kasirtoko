@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
-import '../models/customer_debt.dart';
 import '../database/db_helper.dart';
+import '../models/customer_debt.dart';
 
 class DebtProvider extends ChangeNotifier {
   List<CustomerDebtModel> _debts = [];
@@ -30,8 +30,18 @@ class DebtProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> payDebt(int debtId, double amountPaid) async {
-    await DatabaseHelper.instance.payCustomerDebt(debtId, amountPaid);
+  Future<void> payDebt(
+    int debtId,
+    double amountPaid, {
+    int? shiftId,
+    String cashierName = 'Kasir',
+  }) async {
+    await DatabaseHelper.instance.payCustomerDebt(
+      debtId,
+      amountPaid,
+      shiftId: shiftId,
+      cashierName: cashierName,
+    );
     await loadDebts();
   }
 }

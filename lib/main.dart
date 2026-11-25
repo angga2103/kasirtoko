@@ -2,21 +2,26 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import 'providers/auth_provider.dart';
-import 'providers/product_provider.dart';
-import 'providers/pos_provider.dart';
-import 'providers/cash_flow_provider.dart';
-import 'providers/debt_provider.dart';
 import 'providers/attendance_provider.dart';
+import 'providers/auth_provider.dart';
+import 'providers/cash_flow_provider.dart';
+import 'providers/customer_provider.dart';
+import 'providers/debt_provider.dart';
+import 'providers/pos_provider.dart';
+import 'providers/printer_provider.dart';
+import 'providers/product_provider.dart';
+import 'providers/purchase_provider.dart';
+import 'providers/service_order_provider.dart';
 import 'providers/settings_provider.dart';
 
 import 'screens/login_screen.dart';
 import 'utils/app_theme.dart';
+import 'utils/date_format.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await DateHelper.ensureInitialized();
 
-  // Lock orientation to portrait by default for mobile POS usability
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
@@ -36,14 +41,18 @@ class KasirTokoApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => AuthProvider()..loadUsers()),
         ChangeNotifierProvider(create: (_) => ProductProvider()..loadProducts()),
-        ChangeNotifierProvider(create: (_) => PosProvider()),
+        ChangeNotifierProvider(create: (_) => PosProvider()..loadPromos()),
         ChangeNotifierProvider(create: (_) => CashFlowProvider()..checkOpenShift()),
         ChangeNotifierProvider(create: (_) => DebtProvider()..loadDebts()),
         ChangeNotifierProvider(create: (_) => AttendanceProvider()..loadAttendances()),
         ChangeNotifierProvider(create: (_) => SettingsProvider()..loadSettings()),
+        ChangeNotifierProvider(create: (_) => CustomerProvider()..loadCustomers()),
+        ChangeNotifierProvider(create: (_) => PurchaseProvider()..loadPurchases()),
+        ChangeNotifierProvider(create: (_) => PrinterProvider()..loadPrinters()),
+        ChangeNotifierProvider(create: (_) => ServiceOrderProvider()..loadOrders()),
       ],
       child: MaterialApp(
-        title: 'KasirToko',
+        title: 'KasirToko Universal POS',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.lightTheme,
         home: const LoginScreen(),

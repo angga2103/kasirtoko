@@ -1,13 +1,13 @@
-import 'package:url_launcher/url_launcher.dart';
 import 'package:share_plus/share_plus.dart';
-import '../models/customer_debt.dart';
-import '../models/shift.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../models/attendance.dart';
+import '../models/customer_debt.dart';
+import '../models/service_order.dart';
+import '../models/shift.dart';
 import '../utils/currency_format.dart';
 import '../utils/date_format.dart';
 
 class WhatsAppService {
-  // Normalize Indonesian phone number (0812... -> 62812...)
   static String normalizePhone(String phone) {
     String cleaned = phone.replaceAll(RegExp(r'[^0-9]'), '');
     if (cleaned.startsWith('0')) {
@@ -18,7 +18,6 @@ class WhatsAppService {
     return cleaned;
   }
 
-  // 1. Send Kasbon / Debt Reminder to Customer via WhatsApp
   static Future<bool> sendDebtReminder({
     required CustomerDebtModel debt,
     required String storeName,
@@ -49,7 +48,31 @@ Hubungi kami: $storePhone
     return await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
-  // 2. Send Shift / Daily Closing Report to Admin/Owner via WhatsApp
+  static Future<bool> sendServiceUpdateToCustomer({
+    required ServiceOrderModel order,
+    required String storeName,
+    required String storePhone,
+  }) async {
+    final phone = normalizePhone(order.customerPhone);
+    if (phone.isEmpty) return false;
+
+    final message = '''
+Halo *${order.customerName}*, update status servis dari *$storeName*:
+
+No. Tiket : *${order.ticketNumber}*
+Perangkat : ${order.deviceType} ${order.brand} ${order.model}
+Status    : *${ServiceStatus.label(order.status)}*
+Total Biaya : ${CurrencyHelper.format(order.totalCost > 0 ? order.totalCost : order.estimatedCost)}
+Sudah Bayar : ${CurrencyHelper.format(order.paidAmount)}
+Sisa Bayar  : *${CurrencyHelper.format(order.remainingPayment)}*
+
+Silakan hubungi kami di $storePhone jika ada pertanyaan. Terima kasih!
+''';
+
+    final uri = Uri.parse('https://wa.me/$phone?text=${Uri.encodeComponent(message)}');
+    return await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
   static Future<bool> sendShiftReportToAdmin({
     required ShiftModel shift,
     required String ownerPhone,
@@ -76,14 +99,17 @@ Waktu: $shiftStart s/d $shiftEnd
 - Total Transaksi : $totalTransactions Nota
 - Modal Awal      : ${CurrencyHelper.format(shift.startingCash)}
 - Penjualan Tunai : ${CurrencyHelper.format(shift.totalSalesCash)}
+- Penjualan QRIS  : ${CurrencyHelper.format(shift.totalSalesQris)}
+- Penj. Transfer  : ${CurrencyHelper.format(shift.totalSalesTransfer)}
+- Penj. Kasbon    : ${CurrencyHelper.format(shift.totalSalesKasbon)}
 - Kas Masuk Lain  : ${CurrencyHelper.format(shift.totalCashIn)}
 - Pengeluaran Kas : ${CurrencyHelper.format(shift.totalCashOut)}
 - Retur Tunai     : ${CurrencyHelper.format(shift.totalReturnCash)}
 ----------------------------------
-*TOTAL KAS SISTEM* : *${CurrencyHelper.format(shift.expectedCash)}*
-*UANG FISIK LACI*  : *${CurrencyHelper.format(shift.actualCash ?? 0.0)}*
-*STATUS SELISIH*   : *$diffStr*
-*ESTIMASI LABA*    : ${CurrencyHelper.format(totalGrossProfit)}
+*TOTAL KAS LACI*  : *${CurrencyHelper.format(shift.expectedCash)}*
+*UANG FISIK LACI* : *${CurrencyHelper.format(shift.actualCash ?? 0.0)}*
+*STATUS SELISIH*  : *$diffStr*
+*ESTIMASI LABA*   : ${CurrencyHelper.format(totalGrossProfit)}
 ----------------------------------
 Catatan Kasir: ${shift.note.isNotEmpty ? shift.note : '-'}
 ''';
@@ -92,12 +118,50 @@ Catatan Kasir: ${shift.note.isNotEmpty ? shift.note : '-'}
       final uri = Uri.parse('https://wa.me/$phone?text=${Uri.encodeComponent(message)}');
       return await launchUrl(uri, mode: LaunchMode.externalApplication);
     } else {
-      await Share.share(message, subject: 'Laporan Tutup Shift $storeName');
+      await SharePlus.instance.share(
+        ShareParams(text: message, subject: 'Laporan Tutup Shift $storeName'),
+      );
       return true;
     }
   }
 
-  // 3. Send Attendance Selfie + Anti-Spoofing Hash to Admin via WhatsApp
+  static Future<bool> sendDailySummaryReport({
+    required String ownerPhone,
+    required String storeName,
+    required String reportedBy,
+    required int totalTransactions,
+    required double totalSales,
+    double? totalGrossProfit,
+  }) async {
+    final phone = normalizePhone(ownerPhone);
+    final nowStr = DateHelper.formatFull(DateTime.now());
+    final profitLine = totalGrossProfit != null
+        ? '\n*ESTIMASI LABA*   : ${CurrencyHelper.format(totalGrossProfit)}'
+        : '';
+
+    final message = '''
+*RINGKASAN LAPORAN PENJUALAN*
+Toko: *$storeName*
+Pelapor: *$reportedBy*
+Waktu: $nowStr
+----------------------------------
+- Total Transaksi : $totalTransactions Nota
+- Total Omzet     : *${CurrencyHelper.format(totalSales)}*$profitLine
+----------------------------------
+Dikirim dari Aplikasi KasirToko Universal POS.
+''';
+
+    if (phone.isNotEmpty) {
+      final uri = Uri.parse('https://wa.me/$phone?text=${Uri.encodeComponent(message)}');
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else {
+      await SharePlus.instance.share(
+        ShareParams(text: message, subject: 'Laporan Penjualan $storeName'),
+      );
+      return true;
+    }
+  }
+
   static Future<void> sendAttendanceToAdmin({
     required AttendanceModel attendance,
     required String ownerPhone,
@@ -125,17 +189,19 @@ Foto selfie ber-watermark asli tersimpan di sistem kasir.
 ''';
 
     if (attendance.photoPath.isNotEmpty) {
-      await Share.shareXFiles(
-        [XFile(attendance.photoPath)],
-        text: caption,
-        subject: 'Absensi ${attendance.employeeName}',
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(attendance.photoPath)],
+          text: caption,
+          subject: 'Absensi ${attendance.employeeName}',
+        ),
       );
     } else {
       if (phone.isNotEmpty) {
         final uri = Uri.parse('https://wa.me/$phone?text=${Uri.encodeComponent(caption)}');
         await launchUrl(uri, mode: LaunchMode.externalApplication);
       } else {
-        await Share.share(caption);
+        await SharePlus.instance.share(ShareParams(text: caption));
       }
     }
   }

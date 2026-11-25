@@ -4,13 +4,16 @@ class ShiftModel {
   final String cashierName;
   final DateTime startTime;
   final DateTime? endTime;
-  final double startingCash; // Modal awal di laci
+  final double startingCash;
   final double totalSalesCash;
+  final double totalSalesQris;
+  final double totalSalesTransfer;
+  final double totalSalesKasbon;
   final double totalCashIn;
   final double totalCashOut;
   final double totalReturnCash;
-  final double? actualCash; // Uang fisik dihitung kasir saat tutup shift
-  final double? difference; // actualCash - expectedCash
+  final double? actualCash;
+  final double? difference;
   final String status; // 'open', 'closed'
   final String note;
 
@@ -22,6 +25,9 @@ class ShiftModel {
     this.endTime,
     required this.startingCash,
     this.totalSalesCash = 0.0,
+    this.totalSalesQris = 0.0,
+    this.totalSalesTransfer = 0.0,
+    this.totalSalesKasbon = 0.0,
     this.totalCashIn = 0.0,
     this.totalCashOut = 0.0,
     this.totalReturnCash = 0.0,
@@ -34,17 +40,23 @@ class ShiftModel {
   double get expectedCash =>
       startingCash + totalSalesCash + totalCashIn - totalCashOut - totalReturnCash;
 
+  double get totalAllSales =>
+      totalSalesCash + totalSalesQris + totalSalesTransfer + totalSalesKasbon;
+
   bool get isOpen => status == 'open';
 
   Map<String, dynamic> toMap() {
     return {
-      'id': id,
+      if (id != null) 'id': id,
       'cashier_id': cashierId,
       'cashier_name': cashierName,
       'start_time': startTime.toIso8601String(),
       'end_time': endTime?.toIso8601String(),
       'starting_cash': startingCash,
       'total_sales_cash': totalSalesCash,
+      'total_sales_qris': totalSalesQris,
+      'total_sales_transfer': totalSalesTransfer,
+      'total_sales_kasbon': totalSalesKasbon,
       'total_cash_in': totalCashIn,
       'total_cash_out': totalCashOut,
       'total_return_cash': totalReturnCash,
@@ -57,13 +69,16 @@ class ShiftModel {
 
   factory ShiftModel.fromMap(Map<String, dynamic> map) {
     return ShiftModel(
-      id: map['id'],
-      cashierId: map['cashier_id'],
+      id: map['id'] as int?,
+      cashierId: map['cashier_id'] ?? 1,
       cashierName: map['cashier_name'] ?? 'Kasir',
       startTime: DateTime.parse(map['start_time']),
       endTime: map['end_time'] != null ? DateTime.parse(map['end_time']) : null,
       startingCash: (map['starting_cash'] as num).toDouble(),
       totalSalesCash: (map['total_sales_cash'] as num?)?.toDouble() ?? 0.0,
+      totalSalesQris: (map['total_sales_qris'] as num?)?.toDouble() ?? 0.0,
+      totalSalesTransfer: (map['total_sales_transfer'] as num?)?.toDouble() ?? 0.0,
+      totalSalesKasbon: (map['total_sales_kasbon'] as num?)?.toDouble() ?? 0.0,
       totalCashIn: (map['total_cash_in'] as num?)?.toDouble() ?? 0.0,
       totalCashOut: (map['total_cash_out'] as num?)?.toDouble() ?? 0.0,
       totalReturnCash: (map['total_return_cash'] as num?)?.toDouble() ?? 0.0,

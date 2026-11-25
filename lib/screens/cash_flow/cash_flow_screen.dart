@@ -19,6 +19,13 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
   String _type = 'out'; // 'in' or 'out'
   String _category = 'Operasional Toko';
 
+  @override
+  void dispose() {
+    _amountCtrl.dispose();
+    _noteCtrl.dispose();
+    super.dispose();
+  }
+
   final List<String> _expenseCategories = [
     'Operasional Toko',
     'Beli Kantong Plastik',

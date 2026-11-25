@@ -1,7 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../../providers/product_provider.dart';
-import '../../providers/auth_provider.dart';
 import '../../database/db_helper.dart';
 import '../../utils/app_theme.dart';
 import '../../utils/date_format.dart';

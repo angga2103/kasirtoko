@@ -16,6 +16,12 @@ class ProductModel {
   final double minStockAlert;
   final String? imagePath;
   final bool isActive;
+  final String brand;
+  final String model;
+  final String conditionType; // 'baru' | 'bekas'
+  final String imeiOrSn;
+  final String warrantyInfo;
+  final String description;
 
   // Transient / related lists
   List<ProductUnitModel> units;
@@ -36,6 +42,12 @@ class ProductModel {
     this.minStockAlert = 5.0,
     this.imagePath,
     this.isActive = true,
+    this.brand = '',
+    this.model = '',
+    this.conditionType = 'baru',
+    this.imeiOrSn = '',
+    this.warrantyInfo = '',
+    this.description = '',
     List<ProductUnitModel>? units,
     List<TieredPriceModel>? tieredPrices,
     List<ProductBatchModel>? batches,
@@ -47,8 +59,7 @@ class ProductModel {
 
   double getPriceForQty(double qty) {
     if (tieredPrices.isEmpty) return sellingPrice;
-    
-    // Sort descending by minQty
+
     final sorted = List<TieredPriceModel>.from(tieredPrices)
       ..sort((a, b) => b.minQty.compareTo(a.minQty));
 
@@ -62,7 +73,7 @@ class ProductModel {
 
   Map<String, dynamic> toMap() {
     return {
-      'id': id,
+      if (id != null) 'id': id,
       'code': code,
       'name': name,
       'category': category,
@@ -75,12 +86,18 @@ class ProductModel {
       'min_stock_alert': minStockAlert,
       'image_path': imagePath,
       'is_active': isActive ? 1 : 0,
+      'brand': brand,
+      'model': model,
+      'condition_type': conditionType,
+      'imei_or_sn': imeiOrSn,
+      'warranty_info': warrantyInfo,
+      'description': description,
     };
   }
 
   factory ProductModel.fromMap(Map<String, dynamic> map) {
     return ProductModel(
-      id: map['id'],
+      id: map['id'] as int?,
       code: map['code'] ?? '',
       name: map['name'] ?? '',
       category: map['category'] ?? 'Umum',
@@ -91,8 +108,14 @@ class ProductModel {
       sellingPrice: (map['selling_price'] as num?)?.toDouble() ?? 0.0,
       stock: (map['stock'] as num?)?.toDouble() ?? 0.0,
       minStockAlert: (map['min_stock_alert'] as num?)?.toDouble() ?? 5.0,
-      imagePath: map['image_path'],
+      imagePath: map['image_path'] as String?,
       isActive: (map['is_active'] ?? 1) == 1,
+      brand: (map['brand'] ?? '').toString(),
+      model: (map['model'] ?? '').toString(),
+      conditionType: (map['condition_type'] ?? 'baru').toString(),
+      imeiOrSn: (map['imei_or_sn'] ?? '').toString(),
+      warrantyInfo: (map['warranty_info'] ?? '').toString(),
+      description: (map['description'] ?? '').toString(),
     );
   }
 
@@ -110,6 +133,12 @@ class ProductModel {
     double? minStockAlert,
     String? imagePath,
     bool? isActive,
+    String? brand,
+    String? model,
+    String? conditionType,
+    String? imeiOrSn,
+    String? warrantyInfo,
+    String? description,
     List<ProductUnitModel>? units,
     List<TieredPriceModel>? tieredPrices,
     List<ProductBatchModel>? batches,
@@ -128,9 +157,26 @@ class ProductModel {
       minStockAlert: minStockAlert ?? this.minStockAlert,
       imagePath: imagePath ?? this.imagePath,
       isActive: isActive ?? this.isActive,
+      brand: brand ?? this.brand,
+      model: model ?? this.model,
+      conditionType: conditionType ?? this.conditionType,
+      imeiOrSn: imeiOrSn ?? this.imeiOrSn,
+      warrantyInfo: warrantyInfo ?? this.warrantyInfo,
+      description: description ?? this.description,
       units: units ?? this.units,
       tieredPrices: tieredPrices ?? this.tieredPrices,
       batches: batches ?? this.batches,
     );
   }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! ProductModel) return false;
+    if (id != null && other.id != null) return id == other.id;
+    return code == other.code;
+  }
+
+  @override
+  int get hashCode => id != null ? id.hashCode : code.hashCode;
 }

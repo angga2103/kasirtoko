@@ -27,6 +27,12 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> with 
   }
 
   @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final attProv = Provider.of<AttendanceProvider>(context);
     final settings = Provider.of<SettingsProvider>(context);

@@ -1,16 +1,18 @@
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../models/transaction.dart';
-import '../../models/transaction_item.dart';
 import '../../models/return_order.dart';
 import '../../models/return_item.dart';
 import '../../database/db_helper.dart';
 import '../../providers/auth_provider.dart';
+import '../../providers/cash_flow_provider.dart';
+import '../../providers/debt_provider.dart';
 import '../../providers/product_provider.dart';
 import '../../utils/app_theme.dart';
 import '../../utils/currency_format.dart';
 import '../../utils/date_format.dart';
+import '../../widgets/quantity_stepper.dart';
+import '../scanner/barcode_scanner_screen.dart';
 
 class ReturnScreen extends StatefulWidget {
   const ReturnScreen({super.key});
@@ -24,10 +26,33 @@ class _ReturnScreenState extends State<ReturnScreen> {
   TransactionModel? _selectedTransaction;
   bool _isLoading = false;
 
-  // Track returned item selections: map of item index -> { 'selected': bool, 'qty': double, 'condition': 'baik'/'rusak' }
+  // Track returned item selections: map of item index -> { 'selected': bool, 'qty': double, 'maxQty': double, 'alreadyReturned': double, 'condition': 'baik'/'rusak' }
   final Map<int, Map<String, dynamic>> _itemReturnState = {};
   String _refundMethod = 'tunai';
   final TextEditingController _returnNoteCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _invoiceCtrl.dispose();
+    _returnNoteCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _scanReceiptQr() async {
+    final res = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const BarcodeScannerScreen(
+          title: 'Scan QR Footer Struk',
+          helperText: 'Arahkan kamera ke QR Code di bagian bawah struk',
+          continuousMode: false,
+        ),
+      ),
+    );
+    if (res != null && res.isNotEmpty && mounted) {
+      await _searchInvoice(res);
+    }
+  }
 
   Future<void> _searchInvoice(String rawInput) async {
     String cleanInvoice = rawInput.trim();
@@ -35,7 +60,7 @@ class _ReturnScreenState extends State<ReturnScreen> {
     if (cleanInvoice.startsWith('TRX|')) {
       final parts = cleanInvoice.split('|');
       if (parts.length >= 2) {
-        cleanInvoice = parts[1];
+        cleanInvoice = parts[1].trim();
       }
     }
 
@@ -48,16 +73,27 @@ class _ReturnScreenState extends State<ReturnScreen> {
     });
 
     final trx = await DatabaseHelper.instance.getTransactionByInvoice(cleanInvoice);
+    Map<String, double> returnedMap = {};
+    if (trx != null && trx.id != null) {
+      returnedMap = await DatabaseHelper.instance.getReturnedQuantitiesForTransaction(trx.id!);
+    }
 
+    if (!mounted) return;
     setState(() {
       _isLoading = false;
       _selectedTransaction = trx;
       if (trx != null) {
         _invoiceCtrl.text = trx.invoiceNumber;
         for (int i = 0; i < trx.items.length; i++) {
+          final item = trx.items[i];
+          final key = '${item.productId}_${item.unitName}';
+          final alreadyReturned = returnedMap[key] ?? 0.0;
+          final remainingQty = (item.qty - alreadyReturned).clamp(0.0, item.qty);
           _itemReturnState[i] = {
             'selected': false,
-            'qty': 1.0,
+            'qty': remainingQty > 0 ? (remainingQty >= 1 ? 1.0 : remainingQty) : 0.0,
+            'maxQty': remainingQty,
+            'alreadyReturned': alreadyReturned,
             'condition': 'baik', // 'baik' or 'rusak'
           };
         }
@@ -69,6 +105,13 @@ class _ReturnScreenState extends State<ReturnScreen> {
         const SnackBar(
           content: Text('Nomor nota transaksi tidak ditemukan.'),
           backgroundColor: AppTheme.accentRed,
+        ),
+      );
+    } else if (trx != null && (trx.status == 'void' || trx.status == 'voided') && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Transaksi ini sudah dibatalkan (VOID) sehingga tidak dapat diretur.'),
+          backgroundColor: AppTheme.accentOrange,
         ),
       );
     }
@@ -99,6 +142,8 @@ class _ReturnScreenState extends State<ReturnScreen> {
 
     final auth = Provider.of<AuthProvider>(context, listen: false);
     final productProv = Provider.of<ProductProvider>(context, listen: false);
+    final cashFlow = Provider.of<CashFlowProvider>(context, listen: false);
+    final debtProv = Provider.of<DebtProvider>(context, listen: false);
     final cashier = auth.currentUser;
 
     final returnNumber = 'RET-${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}';
@@ -138,7 +183,10 @@ class _ReturnScreenState extends State<ReturnScreen> {
       items: returnItems,
     );
 
-    await DatabaseHelper.instance.insertReturnOrder(returnOrder);
+    await DatabaseHelper.instance.insertReturnOrder(
+      returnOrder,
+      shiftId: cashFlow.currentShift?.id,
+    );
 
     // Audit log
     await auth.logAction(
@@ -146,8 +194,10 @@ class _ReturnScreenState extends State<ReturnScreen> {
       'Retur nota #${_selectedTransaction!.invoiceNumber}: ${returnItems.length} item, Total Pengembalian: ${CurrencyHelper.format(totalRefund)}',
     );
 
-    // Reload products stock
+    // Reload products stock, cashflow shift & debts
     await productProv.loadProducts();
+    await cashFlow.checkOpenShift();
+    await debtProv.loadDebts();
 
     if (!mounted) return;
 
@@ -232,11 +282,22 @@ class _ReturnScreenState extends State<ReturnScreen> {
                           onSubmitted: _searchInvoice,
                         ),
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 6),
+                      Tooltip(
+                        message: 'Scan QR Struk',
+                        child: OutlinedButton(
+                          onPressed: _scanReceiptQr,
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                          ),
+                          child: const Icon(Icons.qr_code_scanner_rounded, size: 20),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
                       ElevatedButton(
                         onPressed: () => _searchInvoice(_invoiceCtrl.text),
                         style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
                         ),
                         child: const Text('CARI'),
                       ),
@@ -330,7 +391,11 @@ class _ReturnScreenState extends State<ReturnScreen> {
                   final state = _itemReturnState[index]!;
                   final isSelected = state['selected'] as bool;
                   final currentQty = state['qty'] as double;
+                  final maxQty = (state['maxQty'] as num).toDouble();
+                  final alreadyReturned = (state['alreadyReturned'] as num).toDouble();
                   final condition = state['condition'] as String;
+                  final canReturn = _selectedTransaction!.status != 'void' && _selectedTransaction!.status != 'voided' && maxQty > 0;
+                  final allowDecimal = maxQty != maxQty.truncateToDouble() || item.qty != item.qty.truncateToDouble();
 
                   return Card(
                     margin: const EdgeInsets.only(bottom: 8),
@@ -342,11 +407,13 @@ class _ReturnScreenState extends State<ReturnScreen> {
                             children: [
                               Checkbox(
                                 value: isSelected,
-                                onChanged: (val) {
-                                  setState(() {
-                                    state['selected'] = val ?? false;
-                                  });
-                                },
+                                onChanged: canReturn
+                                    ? (val) {
+                                        setState(() {
+                                          state['selected'] = val ?? false;
+                                        });
+                                      }
+                                    : null,
                               ),
                               Expanded(
                                 child: Column(
@@ -354,45 +421,57 @@ class _ReturnScreenState extends State<ReturnScreen> {
                                   children: [
                                     Text(
                                       item.productName,
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 13,
+                                        color: canReturn ? AppTheme.textDark : AppTheme.textMuted,
+                                      ),
                                     ),
                                     Text(
-                                      'Beli: ${item.qty.toInt()} ${item.unitName} @ ${CurrencyHelper.format(item.unitPrice)}',
-                                      style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                                      alreadyReturned > 0
+                                          ? 'Beli: ${item.qty} • Sisa bisa diretur: $maxQty ${item.unitName} @ ${CurrencyHelper.format(item.unitPrice)}'
+                                          : 'Beli: ${item.qty} ${item.unitName} @ ${CurrencyHelper.format(item.unitPrice)}',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: canReturn ? AppTheme.textMuted : AppTheme.accentRed,
+                                      ),
                                     ),
                                   ],
                                 ),
                               ),
-                              Text(
-                                CurrencyHelper.format(currentQty * item.unitPrice),
-                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                              ),
+                              if (isSelected)
+                                Text(
+                                  CurrencyHelper.format(currentQty * item.unitPrice),
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                )
+                              else if (maxQty <= 0)
+                                const Text(
+                                  'Habis Diretur',
+                                  style: TextStyle(fontSize: 11, color: AppTheme.textMuted, fontStyle: FontStyle.italic),
+                                ),
                             ],
                           ),
-                          if (isSelected) ...[
+                          if (isSelected && canReturn) ...[
                             const Divider(height: 12),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              alignment: WrapAlignment.spaceBetween,
+                              crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
                                 // Quantity adjustment
                                 Row(
+                                  mainAxisSize: MainAxisSize.min,
                                   children: [
                                     const Text('Qty Retur: ', style: TextStyle(fontSize: 11)),
-                                    IconButton(
-                                      icon: const Icon(Icons.remove_circle_outline, size: 20),
-                                      onPressed: currentQty > 1
-                                          ? () => setState(() => state['qty'] = currentQty - 1)
-                                          : null,
-                                    ),
-                                    Text(
-                                      '${currentQty.toInt()} ${item.unitName}',
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                                    ),
-                                    IconButton(
-                                      icon: const Icon(Icons.add_circle_outline, size: 20),
-                                      onPressed: currentQty < item.qty
-                                          ? () => setState(() => state['qty'] = currentQty + 1)
-                                          : null,
+                                    QuantityStepper(
+                                      value: currentQty,
+                                      minValue: maxQty >= 1 ? 1.0 : maxQty,
+                                      maxValue: maxQty,
+                                      allowDecimal: allowDecimal,
+                                      compact: true,
+                                      unitLabel: item.unitName,
+                                      onChanged: (val) => setState(() => state['qty'] = val),
                                     ),
                                   ],
                                 ),

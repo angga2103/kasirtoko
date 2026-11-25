@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../providers/auth_provider.dart';
+import '../../providers/cash_flow_provider.dart';
 import '../../providers/debt_provider.dart';
+import '../../providers/printer_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../models/customer_debt.dart';
+import '../../services/printer/printer_manager.dart';
 import '../../services/whatsapp_service.dart';
-import '../../services/document_service.dart';
 import '../../utils/app_theme.dart';
 import '../../utils/currency_format.dart';
 import '../../utils/date_format.dart';
@@ -28,8 +31,16 @@ class _DebtListScreenState extends State<DebtListScreen> with SingleTickerProvid
     });
   }
 
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
   void _showPaymentDialog(CustomerDebtModel debt) {
     final payCtrl = TextEditingController(text: debt.remainingDebt.toInt().toString());
+    final cashFlow = Provider.of<CashFlowProvider>(context, listen: false);
+    final auth = Provider.of<AuthProvider>(context, listen: false);
 
     showDialog(
       context: context,
@@ -61,9 +72,19 @@ class _DebtListScreenState extends State<DebtListScreen> with SingleTickerProvid
               onPressed: () async {
                 final amount = double.tryParse(payCtrl.text.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0.0;
                 if (amount > 0) {
-                  await Provider.of<DebtProvider>(context, listen: false).payDebt(debt.id!, amount);
+                  await Provider.of<DebtProvider>(context, listen: false).payDebt(
+                    debt.id!,
+                    amount,
+                    shiftId: cashFlow.currentShift?.id,
+                    cashierName: auth.currentUser?.name ?? 'Kasir',
+                  );
+                  await cashFlow.checkOpenShift();
+                  await auth.logAction(
+                    'bayar_kasbon',
+                    'Pembayaran kasbon nota ${debt.invoiceNumber} (${debt.customerName}): ${CurrencyHelper.format(amount)}',
+                  );
+                  if (ctx.mounted) Navigator.pop(ctx);
                   if (mounted) {
-                    Navigator.pop(ctx);
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(content: Text('Pembayaran ${CurrencyHelper.format(amount)} berhasil dicatat.')),
                     );
@@ -75,7 +96,9 @@ class _DebtListScreenState extends State<DebtListScreen> with SingleTickerProvid
           ],
         );
       },
-    );
+    ).whenComplete(() {
+      Future.delayed(const Duration(milliseconds: 300), payCtrl.dispose);
+    });
   }
 
   @override
@@ -209,17 +232,25 @@ class _DebtListScreenState extends State<DebtListScreen> with SingleTickerProvid
                             }
                           },
                         ),
-                        // Invoice Penagihan PDF Print
+                        // Invoice Penagihan Print (Adapter-Aware)
                         IconButton(
                           icon: const Icon(Icons.print_rounded, color: Colors.blue),
                           tooltip: 'Cetak Surat Invoice Penagihan',
                           onPressed: () async {
-                            await DocumentService.printDebtInvoice(
+                            final printerProv = Provider.of<PrinterProvider>(context, listen: false);
+                            final res = await PrinterManager.printDebtInvoice(
+                              printer: printerProv.defaultPrinter,
                               debt: d,
                               storeName: settings.storeName,
                               storeAddress: settings.storeAddress,
                               storePhone: settings.storePhone,
+                              logoPath: settings.logoPath,
                             );
+                            if (!res.success && context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(res.message), backgroundColor: AppTheme.accentOrange),
+                              );
+                            }
                           },
                         ),
                         if (!d.isPaidOff)

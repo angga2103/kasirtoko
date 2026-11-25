@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../models/shift.dart';
 import '../../providers/cash_flow_provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/settings_provider.dart';
@@ -19,6 +20,14 @@ class _ShiftScreenState extends State<ShiftScreen> {
   final TextEditingController _startingCashCtrl = TextEditingController(text: '100000');
   final TextEditingController _actualCashCtrl = TextEditingController();
   final TextEditingController _closeNoteCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _startingCashCtrl.dispose();
+    _actualCashCtrl.dispose();
+    _closeNoteCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -81,6 +90,9 @@ class _ShiftScreenState extends State<ShiftScreen> {
 
                         _buildShiftRow('Modal Awal (Kas Floating)', CurrencyHelper.format(shift.startingCash)),
                         _buildShiftRow('Penjualan Tunai', CurrencyHelper.format(shift.totalSalesCash)),
+                        _buildShiftRow('Penjualan QRIS', CurrencyHelper.format(shift.totalSalesQris)),
+                        _buildShiftRow('Penjualan Transfer', CurrencyHelper.format(shift.totalSalesTransfer)),
+                        _buildShiftRow('Penjualan Kasbon', CurrencyHelper.format(shift.totalSalesKasbon)),
                         _buildShiftRow('Kas Masuk Lain', '+${CurrencyHelper.format(shift.totalCashIn)}'),
                         _buildShiftRow('Pengeluaran Operasional', '-${CurrencyHelper.format(shift.totalCashOut)}'),
                         _buildShiftRow('Retur Tunai', '-${CurrencyHelper.format(shift.totalReturnCash)}'),
@@ -194,17 +206,20 @@ class _ShiftScreenState extends State<ShiftScreen> {
                                             _actualCashCtrl.text.replaceAll(RegExp(r'[^0-9]'), '')) ??
                                         0.0;
 
-                                    final shiftCopy = shift;
-
-                                    await cashFlow.endShift(
+                                    final endResult = await cashFlow.endShift(
                                       actualCashCount: count,
                                       note: _closeNoteCtrl.text,
                                     );
+                                    if (endResult == null) return;
+
+                                    final closedShift = endResult['shift'] as ShiftModel;
+                                    final totalTrx = (endResult['totalTransactions'] as int?) ?? 0;
+                                    final totalGrossProfit = (endResult['totalGrossProfit'] as num?)?.toDouble() ?? 0.0;
 
                                     // Audit log
                                     await auth.logAction(
                                       'tutup_shift',
-                                      'Tutup shift kasir ${shiftCopy.cashierName}: Fisik: ${CurrencyHelper.format(count)}, Selisih: ${CurrencyHelper.format(count - shiftCopy.expectedCash)}',
+                                      'Tutup shift kasir ${closedShift.cashierName}: Fisik: ${CurrencyHelper.format(count)}, Selisih: ${CurrencyHelper.format(closedShift.difference ?? 0.0)}',
                                     );
 
                                     if (!mounted) return;
@@ -214,8 +229,9 @@ class _ShiftScreenState extends State<ShiftScreen> {
                                       context: context,
                                       builder: (ctx) => AlertDialog(
                                         title: const Text('Shift Telah Ditutup'),
-                                        content: const Text(
-                                            'Ingin langsung kirim ringkasan laporan shift ini ke WhatsApp Owner?'),
+                                        content: Text(
+                                          'Total $totalTrx transaksi tercatat.\nIngin langsung kirim ringkasan laporan shift ini ke WhatsApp Owner?',
+                                        ),
                                         actions: [
                                           TextButton(
                                             onPressed: () {
@@ -230,11 +246,11 @@ class _ShiftScreenState extends State<ShiftScreen> {
                                             onPressed: () async {
                                               Navigator.pop(ctx);
                                               await WhatsAppService.sendShiftReportToAdmin(
-                                                shift: shiftCopy,
+                                                shift: closedShift,
                                                 ownerPhone: settings.ownerPhone,
                                                 storeName: settings.storeName,
-                                                totalTransactions: 0,
-                                                totalGrossProfit: 0.0,
+                                                totalTransactions: totalTrx,
+                                                totalGrossProfit: totalGrossProfit,
                                               );
                                               if (mounted) Navigator.pop(context);
                                             },

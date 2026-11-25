@@ -18,44 +18,57 @@ class BackupResult {
 }
 
 class BackupService {
-  // 1. Create a local backup file and trigger share (to WhatsApp, Google Drive, or File Manager)
-  static Future<BackupResult> createAndShareBackup() async {
+  /// Create a timestamped backup file in Documents/backups and optionally trigger OS share sheet.
+  static Future<BackupResult> createAndShareBackup({bool shareNow = true}) async {
     try {
       final docDir = await getApplicationDocumentsDirectory();
       final dbPath = p.join(docDir.path, 'kasirtoko.db');
+
+      // Flush WAL/checkpoint cleanly before copying
+      final db = await DatabaseHelper.instance.database;
+      try {
+        await db.rawQuery('PRAGMA wal_checkpoint(FULL)');
+      } catch (_) {}
 
       final dbFile = File(dbPath);
       if (!await dbFile.exists()) {
         return BackupResult(success: false, message: 'Database lokal tidak ditemukan.');
       }
 
-      // Create backup copy with timestamp
       final now = DateTime.now();
       final backupFileName =
           'KasirToko_Backup_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}.db';
-      final tempDir = await getTemporaryDirectory();
-      final backupPath = p.join(tempDir.path, backupFileName);
 
-      await dbFile.copy(backupPath);
+      final backupDir = Directory(p.join(docDir.path, 'backups'));
+      if (!await backupDir.exists()) {
+        await backupDir.create(recursive: true);
+      }
+      final persistentBackupPath = p.join(backupDir.path, backupFileName);
+      await dbFile.copy(persistentBackupPath);
 
-      // Trigger Share Sheet (User can choose Google Drive, WhatsApp, Telegram, or Save to Device)
-      await Share.shareXFiles(
-        [XFile(backupPath)],
-        subject: 'Backup Database KasirToko - $backupFileName',
-        text: 'File Cadangan Database KasirToko Tanggal: ${now.toLocal()}',
-      );
+      if (shareNow) {
+        await SharePlus.instance.share(
+          ShareParams(
+            files: [XFile(persistentBackupPath)],
+            subject: 'Backup Database KasirToko - $backupFileName',
+            text: 'File Cadangan Database KasirToko Tanggal: ${now.toLocal()}',
+          ),
+        );
+      }
 
       return BackupResult(
         success: true,
-        message: 'File cadangan berhasil dibuat dan siap dibagikan.',
-        backupFilePath: backupPath,
+        message: shareNow
+            ? 'File cadangan berhasil dibuat dan siap dibagikan.'
+            : 'Backup otomatis lokal tersimpan: $backupFileName',
+        backupFilePath: persistentBackupPath,
       );
     } catch (e) {
       return BackupResult(success: false, message: 'Gagal membuat backup: $e');
     }
   }
 
-  // 2. Restore database from selected file
+  /// Restore database from a picked .db file and safely reset SQLite singleton connection.
   static Future<BackupResult> restoreDatabase() async {
     try {
       final pickedFile = await FilePicker.pickFile(
@@ -67,7 +80,7 @@ class BackupService {
       }
 
       final dbFile = File(pickedFile.path!);
-      if (!dbFile.path.endsWith('.db')) {
+      if (!dbFile.path.toLowerCase().endsWith('.db')) {
         return BackupResult(
           success: false,
           message: 'Format file tidak sesuai! Harus berformat .db',
@@ -76,17 +89,32 @@ class BackupService {
 
       final docDir = await getApplicationDocumentsDirectory();
       final dbPath = p.join(docDir.path, 'kasirtoko.db');
+      final existingDb = File(dbPath);
 
-      // Close current db instance before overwrite
-      final db = await DatabaseHelper.instance.database;
-      await db.close();
+      // Save safety rollback copy before overwriting
+      if (await existingDb.exists()) {
+        await existingDb.copy(p.join(docDir.path, 'kasirtoko_before_restore.db'));
+      }
 
-      // Overwrite database file
+      // Safely close and nullify cached DB singleton so next access re-opens cleanly
+      await DatabaseHelper.instance.resetConnection();
+
+      // Remove stale WAL/SHM files if present
+      for (final suffix in ['-wal', '-shm']) {
+        final sideFile = File('$dbPath$suffix');
+        if (await sideFile.exists()) {
+          await sideFile.delete();
+        }
+      }
+
       await dbFile.copy(dbPath);
+
+      // Re-open database right away (runs onUpgrade automatically if backup was v1!)
+      await DatabaseHelper.instance.database;
 
       return BackupResult(
         success: true,
-        message: 'Database berhasil dipulihkan! Silakan restart aplikasi.',
+        message: 'Database berhasil dipulihkan dan disinkronkan!',
       );
     } catch (e) {
       return BackupResult(success: false, message: 'Gagal memulihkan database: $e');

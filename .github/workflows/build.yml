@@ -83,47 +83,44 @@ jobs:
           fi
           echo "Found APK: $APK_FILE"
           mkdir -p build/app/outputs/flutter-apk
-          cp "$APK_FILE" build/app/outputs/flutter-apk/KasirToko-v1.0.0.apk
+          cp "$APK_FILE" build/app/outputs/flutter-apk/KasirToko-v2.0.0.apk
           echo "## ✅ Build Success!" >> $GITHUB_STEP_SUMMARY
-          echo "APK successfully created: \`KasirToko-v1.0.0.apk\` ($(du -h "$APK_FILE" | cut -f1))" >> $GITHUB_STEP_SUMMARY
+          echo "APK successfully created: \`KasirToko-v2.0.0.apk\` ($(du -h "$APK_FILE" | cut -f1))" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: KasirToko-Release-APK
-          path: build/app/outputs/flutter-apk/KasirToko-v1.0.0.apk
+          path: build/app/outputs/flutter-apk/KasirToko-v2.0.0.apk
           retention-days: 14
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.0
-          name: "KasirToko v1.0.0 - Android Release APK"
+          tag_name: v2.0.0
+          name: "KasirToko Universal POS v2.0.0 - Android Release APK"
           make_latest: true
           body: |
-            ## KasirToko Android (Full Offline-First) v1.0.0
+            ## KasirToko Universal Android POS (Offline-First) v2.0.0
             
-            Unduh file `KasirToko-v1.0.0.apk` di bawah ini dan pasang langsung di tablet / HP Android kasir Anda.
+            Unduh file `KasirToko-v2.0.0.apk` di bawah ini dan pasang langsung di HP atau Tablet Android kasir Anda.
             
-            ### Fitur Utama:
-            - **Multi-Level Karyawan:** Owner, Supervisor, Kasir, Gudang.
-            - **Point of Sale (POS):** Multi-satuan, harga bertingkat grosir, barang fisik vs jasa, pending/hold cart, bayar tunai/transfer/kasbon.
-            - **QR Code Transaksi di Footer Struk:** Struk thermal 58mm/80mm dilengkapi QR invoice di footer untuk pencarian riwayat nota & retur instan 1 detik.
-            - **Retur Produk Sebagian / Semua:** Pemisahan stok baik (masuk rak kasir) vs rusak (masuk gudang rusak/afkir), refund tunai/potong kasbon.
-            - **Manajemen Arus Kas & Shift Kasir:** Buka shift, modal awal, kas masuk operasional, kas keluar biaya, tutup shift blind count & hitung selisih kas.
-            - **Buku Kasbon & Notifikasi Jatuh Tempo:** Pelacakan kasbon pelanggan, 1-klik tagihan WhatsApp, dan cetak Surat Invoice Penagihan PDF A4.
-            - **Cetak Label Barcode & QR Code:** Generator cetak thermal label stiker 1D barcode Code128 dan 2D QR Code custom ukuran.
-            - **Gudang & Logistik:** Surat Jalan (Delivery Order) A4 PDF, Surat Ambil Barang Gudang, Stok Opname fisik vs sistem, Pengingat Kadaluarsa Produk (H-30, H-7, Expired).
-            - **Absensi Selfie Liveness Offline (Anti-AI):** 100% Offline Google ML Kit Face Mesh, Dynamic Token Challenge, Hardcoded Watermark (#AUTH-hash), Rekap Kedisiplinan Mingguan.
-            - **Backup & Keamanan Data:** Ekspor/Impor database SQLite offline, kirim backup ke Google Drive & WhatsApp, log audit aksi karyawan.
+            ### Pembaruan Utama v2.0.0:
+            - **Konsep Universal POS:** Konfigurasi jenis usaha (Retail & Minimarket, Grosir & Agen, Konter HP & Aksesoris, Toko Elektronik, Jasa Servis, Perdagangan Umum) dengan modul & kategori adaptif tanpa menghapus data lama.
+            - **Desain Dashboard Modern & Responsif:** Mendukung HP ringkas (360dp+) hingga Tablet Dual-Pane (layar penuh kasir split catalog + keranjang).
+            - **Scanner Barcode Real-Time + Anti-Double-Scan:** Beep hardware & getar, mode beruntun di Kasir, tombol scan satu kali + validasi duplikat barcode di form produk, serta scan QR footer struk di modul Retur.
+            - **Modul Jasa Servis HP & Elektronik:** 8 status servis lengkap, penerimaan DP & pelunasan, sinkronisasi stok sparepart ke inventory, riwayat foto kondisi perangkat, cetak nota servis (Thermal/PDF/Dot Matrix) & update ke WhatsApp pelanggan.
+            - **Manajemen Printer & Template Struk Lengkap:** Multi-printer adapter (Thermal Bluetooth RFCOMM/USB OTG/LAN TCP/IP, Laser PDF A4, Dot Matrix ESC/P), kontrol laci kasir RJ11, 5 preset template struk + snapshot historis untuk cetak ulang.
+            - **Karyawan, Hak Akses Granular & Keamanan:** 7 Role + 15 izin fitur granular, autentikasi PIN maupun Username+Password dengan salted HMAC-SHA256 hashing.
+            - **Gudang, Pelanggan, Pembelian & Retur Akurat:** Perbaikan input Qty Surat Jalan & Surat Ambil Barang (`QuantityStepper`), manajemen Pelanggan & Pembelian Supplier, serta batas sisa kuantitas retur & laporan laba kotor multi-satuan akurat.
             
-            ### PIN Default Masuk:
-            - **Owner:** `123456`
-            - **Supervisor:** `3333`
-            - **Kasir:** `1111`
-            - **Gudang:** `2222`
-          files: build/app/outputs/flutter-apk/KasirToko-v1.0.0.apk
+            ### Akun Bawaan (Username / PIN):
+            - **Owner:** `owner` / `123456`
+            - **Supervisor:** `supervisor` / `3333`
+            - **Kasir:** `kasir` / `1111`
+            - **Gudang:** `gudang` / `2222`
+          files: build/app/outputs/flutter-apk/KasirToko-v2.0.0.apk
           draft: false
           prerelease: false
         env:
