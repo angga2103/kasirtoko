@@ -16,7 +16,8 @@ class TransactionModel {
   final double taxAmount;
   final String promoName;
   final double grandTotal;
-  final String paymentMethod; // 'tunai', 'qris', 'transfer', 'kasbon'
+  final String paymentMethod; // 'tunai', 'qris', 'transfer', 'kasbon', 'saldo_kredit'
+  final double creditUsed;
   final double amountPaid;
   final double changeAmount;
   final String status; // 'completed', 'voided', 'returned', 'partial_return'
@@ -41,6 +42,7 @@ class TransactionModel {
     this.promoName = '',
     required this.grandTotal,
     this.paymentMethod = 'tunai',
+    this.creditUsed = 0.0,
     required this.amountPaid,
     this.changeAmount = 0.0,
     this.status = 'completed',
@@ -77,6 +79,7 @@ class TransactionModel {
       'promo_name': promoName,
       'grand_total': grandTotal,
       'payment_method': paymentMethod,
+      'credit_used': creditUsed,
       'amount_paid': amountPaid,
       'change_amount': changeAmount,
       'status': status,
@@ -103,6 +106,7 @@ class TransactionModel {
       promoName: (map['promo_name'] ?? '').toString(),
       grandTotal: (map['grand_total'] as num).toDouble(),
       paymentMethod: map['payment_method'] ?? 'tunai',
+      creditUsed: (map['credit_used'] as num?)?.toDouble() ?? 0.0,
       amountPaid: (map['amount_paid'] as num).toDouble(),
       changeAmount: (map['change_amount'] as num?)?.toDouble() ?? 0.0,
       status: map['status'] ?? 'completed',

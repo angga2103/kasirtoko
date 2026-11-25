@@ -9,6 +9,7 @@ class ShiftModel {
   final double totalSalesQris;
   final double totalSalesTransfer;
   final double totalSalesKasbon;
+  final double totalSalesCredit;
   final double totalCashIn;
   final double totalCashOut;
   final double totalReturnCash;
@@ -28,6 +29,7 @@ class ShiftModel {
     this.totalSalesQris = 0.0,
     this.totalSalesTransfer = 0.0,
     this.totalSalesKasbon = 0.0,
+    this.totalSalesCredit = 0.0,
     this.totalCashIn = 0.0,
     this.totalCashOut = 0.0,
     this.totalReturnCash = 0.0,
@@ -41,7 +43,7 @@ class ShiftModel {
       startingCash + totalSalesCash + totalCashIn - totalCashOut - totalReturnCash;
 
   double get totalAllSales =>
-      totalSalesCash + totalSalesQris + totalSalesTransfer + totalSalesKasbon;
+      totalSalesCash + totalSalesQris + totalSalesTransfer + totalSalesKasbon + totalSalesCredit;
 
   bool get isOpen => status == 'open';
 
@@ -57,6 +59,7 @@ class ShiftModel {
       'total_sales_qris': totalSalesQris,
       'total_sales_transfer': totalSalesTransfer,
       'total_sales_kasbon': totalSalesKasbon,
+      'total_sales_credit': totalSalesCredit,
       'total_cash_in': totalCashIn,
       'total_cash_out': totalCashOut,
       'total_return_cash': totalReturnCash,
@@ -79,6 +82,7 @@ class ShiftModel {
       totalSalesQris: (map['total_sales_qris'] as num?)?.toDouble() ?? 0.0,
       totalSalesTransfer: (map['total_sales_transfer'] as num?)?.toDouble() ?? 0.0,
       totalSalesKasbon: (map['total_sales_kasbon'] as num?)?.toDouble() ?? 0.0,
+      totalSalesCredit: (map['total_sales_credit'] as num?)?.toDouble() ?? 0.0,
       totalCashIn: (map['total_cash_in'] as num?)?.toDouble() ?? 0.0,
       totalCashOut: (map['total_cash_out'] as num?)?.toDouble() ?? 0.0,
       totalReturnCash: (map['total_return_cash'] as num?)?.toDouble() ?? 0.0,

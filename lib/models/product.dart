@@ -14,6 +14,8 @@ class ProductModel {
   final double costPrice;
   final double sellingPrice;
   final double stock;
+  final double quarantineStock;
+  final double damagedStock;
   final double minStockAlert;
   final String? imagePath;
   final bool isActive;
@@ -41,6 +43,8 @@ class ProductModel {
     this.costPrice = 0.0,
     required this.sellingPrice,
     this.stock = 0.0,
+    this.quarantineStock = 0.0,
+    this.damagedStock = 0.0,
     this.minStockAlert = 5.0,
     this.imagePath,
     this.isActive = true,
@@ -88,6 +92,8 @@ class ProductModel {
       'cost_price': costPrice,
       'selling_price': sellingPrice,
       'stock': stock,
+      'quarantine_stock': quarantineStock,
+      'damaged_stock': damagedStock,
       'min_stock_alert': minStockAlert,
       'image_path': imagePath,
       'is_active': isActive ? 1 : 0,
@@ -113,6 +119,8 @@ class ProductModel {
       costPrice: (map['cost_price'] as num?)?.toDouble() ?? 0.0,
       sellingPrice: (map['selling_price'] as num?)?.toDouble() ?? 0.0,
       stock: (map['stock'] as num?)?.toDouble() ?? 0.0,
+      quarantineStock: (map['quarantine_stock'] as num?)?.toDouble() ?? 0.0,
+      damagedStock: (map['damaged_stock'] as num?)?.toDouble() ?? 0.0,
       minStockAlert: (map['min_stock_alert'] as num?)?.toDouble() ?? 5.0,
       imagePath: map['image_path'] as String?,
       isActive: (map['is_active'] ?? 1) == 1,
@@ -137,6 +145,8 @@ class ProductModel {
     double? costPrice,
     double? sellingPrice,
     double? stock,
+    double? quarantineStock,
+    double? damagedStock,
     double? minStockAlert,
     String? imagePath,
     bool? isActive,
@@ -162,6 +172,8 @@ class ProductModel {
       costPrice: costPrice ?? this.costPrice,
       sellingPrice: sellingPrice ?? this.sellingPrice,
       stock: stock ?? this.stock,
+      quarantineStock: quarantineStock ?? this.quarantineStock,
+      damagedStock: damagedStock ?? this.damagedStock,
       minStockAlert: minStockAlert ?? this.minStockAlert,
       imagePath: imagePath ?? this.imagePath,
       isActive: isActive ?? this.isActive,

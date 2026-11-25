@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import '../../database/db_helper.dart';
 import '../../models/customer.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/cash_flow_provider.dart';
@@ -32,6 +33,8 @@ class _PaymentDialogState extends State<PaymentDialog> {
   String _paymentMethod = 'tunai';
   double _paidAmount = 0.0;
   int? _selectedCustomerId;
+  double _customerCreditBalance = 0.0;
+  bool _useCreditBalance = false;
   bool _isSubmitting = false;
 
   @override
@@ -43,9 +46,61 @@ class _PaymentDialogState extends State<PaymentDialog> {
     _selectedCustomerId = pos.customerId;
     _customerNameCtrl = TextEditingController(text: pos.customerName);
     _customerPhoneCtrl = TextEditingController(text: pos.customerPhone);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
-      Provider.of<CustomerProvider>(context, listen: false).loadCustomers();
+      if (_selectedCustomerId != null) {
+        await _loadCustomerCredit(_selectedCustomerId);
+      }
+      if (!mounted) return;
+      await Provider.of<CustomerProvider>(context, listen: false).loadCustomers();
+    });
+  }
+
+  Future<void> _loadCustomerCredit(int? customerId) async {
+    if (customerId == null) {
+      if (!mounted) return;
+      final pos = Provider.of<PosProvider>(context, listen: false);
+      pos.setCreditUsed(0.0);
+      setState(() {
+        _customerCreditBalance = 0.0;
+        _useCreditBalance = false;
+        if (_paymentMethod != 'kasbon') {
+          _paidAmount = pos.grandTotal;
+          _cashCtrl.text = pos.grandTotal.toInt().toString();
+        }
+      });
+      return;
+    }
+    final bal = await DatabaseHelper.instance.getCustomerCreditBalance(customerId);
+    if (!mounted) return;
+    final pos = Provider.of<PosProvider>(context, listen: false);
+    final shouldUse = _useCreditBalance && bal > 0;
+    final applied = shouldUse ? bal.clamp(0.0, pos.grandTotal) : 0.0;
+    pos.setCreditUsed(applied);
+    setState(() {
+      _customerCreditBalance = bal;
+      if (bal <= 0) _useCreditBalance = false;
+      final netDue = (pos.grandTotal - applied).clamp(0.0, pos.grandTotal);
+      if (_paymentMethod != 'kasbon') {
+        _paidAmount = netDue;
+        _cashCtrl.text = netDue.toInt().toString();
+      }
+    });
+  }
+
+  void _toggleUseCredit(bool enable) {
+    final pos = Provider.of<PosProvider>(context, listen: false);
+    final applied = (enable && _customerCreditBalance > 0)
+        ? _customerCreditBalance.clamp(0.0, pos.grandTotal)
+        : 0.0;
+    pos.setCreditUsed(applied);
+    final netDue = (pos.grandTotal - applied).clamp(0.0, pos.grandTotal);
+    setState(() {
+      _useCreditBalance = enable && _customerCreditBalance > 0;
+      if (_paymentMethod != 'kasbon') {
+        _paidAmount = netDue;
+        _cashCtrl.text = netDue.toInt().toString();
+      }
     });
   }
 
@@ -87,9 +142,15 @@ class _PaymentDialogState extends State<PaymentDialog> {
       return;
     }
 
-    if (_paymentMethod == 'tunai' && _paidAmount < pos.grandTotal) {
+    final double appliedCredit =
+        (_useCreditBalance && _selectedCustomerId != null && _customerCreditBalance > 0)
+            ? _customerCreditBalance.clamp(0.0, pos.grandTotal)
+            : 0.0;
+    final double netDue = (pos.grandTotal - appliedCredit).clamp(0.0, pos.grandTotal);
+
+    if (_paymentMethod == 'tunai' && netDue > 0.01 && _paidAmount < netDue) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Nominal uang diterima kurang dari total tagihan!')),
+        const SnackBar(content: Text('Nominal uang diterima kurang dari sisa tagihan!')),
       );
       return;
     }
@@ -111,12 +172,15 @@ class _PaymentDialogState extends State<PaymentDialog> {
     setState(() => _isSubmitting = true);
 
     pos.setCustomerInfo(
-      _paymentMethod == 'kasbon' ? cleanCustName : (cleanCustName.isEmpty ? 'Pelanggan Umum' : cleanCustName),
+      (_paymentMethod == 'kasbon' || appliedCredit > 0)
+          ? cleanCustName
+          : (cleanCustName.isEmpty ? 'Pelanggan Umum' : cleanCustName),
       _customerPhoneCtrl.text,
       customerId: _selectedCustomerId,
     );
-    pos.setPaymentMethod(_paymentMethod);
-    pos.setAmountPaid(_paymentMethod == 'tunai' || _paymentMethod == 'kasbon' ? _paidAmount : pos.grandTotal);
+    pos.setCreditUsed(appliedCredit);
+    pos.setPaymentMethod(netDue <= 0.01 && appliedCredit > 0 ? 'saldo_kredit' : _paymentMethod);
+    pos.setAmountPaid(_paymentMethod == 'tunai' || _paymentMethod == 'kasbon' ? _paidAmount : netDue);
 
     final cashier = auth.currentUser;
     final customInvoice = settings.generateTransactionNumber();
@@ -202,14 +266,19 @@ class _PaymentDialogState extends State<PaymentDialog> {
     final registeredCustomers = custProv.customers
         .where((c) => c.id != null && c.name.trim().toLowerCase() != 'pelanggan umum')
         .toList();
-    final double change = (_paidAmount >= pos.grandTotal) ? (_paidAmount - pos.grandTotal) : 0.0;
+    final double appliedCredit =
+        (_useCreditBalance && _selectedCustomerId != null && _customerCreditBalance > 0)
+            ? _customerCreditBalance.clamp(0.0, pos.grandTotal)
+            : 0.0;
+    final double netDue = (pos.grandTotal - appliedCredit).clamp(0.0, pos.grandTotal);
+    final double change = (_paidAmount >= netDue) ? (_paidAmount - netDue) : 0.0;
     final bool canPay = !_isSubmitting &&
         !pos.isEmpty &&
         cashFlow.isShiftOpen &&
-        !(_paymentMethod == 'tunai' && _paidAmount < pos.grandTotal);
+        !(netDue > 0.01 && _paymentMethod == 'tunai' && _paidAmount < netDue);
 
-    final quickNominals = QuickCashHelper.suggestNominals(pos.grandTotal);
-    final hasExactInNominals = quickNominals.any((n) => (n - pos.grandTotal).abs() < 1);
+    final quickNominals = QuickCashHelper.suggestNominals(netDue);
+    final hasExactInNominals = quickNominals.any((n) => (n - netDue).abs() < 1);
 
     return Dialog(
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
@@ -308,127 +377,213 @@ class _PaymentDialogState extends State<PaymentDialog> {
                       CurrencyHelper.format(pos.grandTotal),
                       style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: AppTheme.primaryGreen),
                     ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 14),
-
-              // Payment Methods
-              const Text('Metode Pembayaran:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(child: _buildMethodButton('tunai', 'Tunai', Icons.payments_rounded)),
-                  const SizedBox(width: 6),
-                  Expanded(child: _buildMethodButton('qris', 'QRIS', Icons.qr_code_2_rounded)),
-                  const SizedBox(width: 6),
-                  Expanded(child: _buildMethodButton('transfer', 'Transfer', Icons.account_balance_rounded)),
-                  const SizedBox(width: 6),
-                  Expanded(child: _buildMethodButton('kasbon', 'Kasbon', Icons.hourglass_top_rounded)),
-                ],
-              ),
-              const SizedBox(height: 14),
-
-              if (_paymentMethod == 'tunai') ...[
-                const Text('Uang Diterima:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: _cashCtrl,
-                  keyboardType: TextInputType.number,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  decoration: const InputDecoration(prefixText: 'Rp '),
-                  onChanged: (val) {
-                    setState(() {
-                      _paidAmount = double.tryParse(val.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0.0;
-                    });
-                  },
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    if (!hasExactInNominals && pos.grandTotal > 0)
-                      _buildQuickCashChip('Uang Pas', pos.grandTotal),
-                    ...quickNominals.map((amt) {
-                      final isExact = (amt - pos.grandTotal).abs() < 1;
-                      final formatted = CurrencyHelper.format(amt);
-                      return _buildQuickCashChip(isExact ? '$formatted (Pas)' : formatted, amt);
-                    }),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(10)),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Kembalian:', style: TextStyle(fontWeight: FontWeight.bold)),
-                      Text(
-                        CurrencyHelper.format(change),
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: _paidAmount >= pos.grandTotal ? AppTheme.primaryGreen : AppTheme.accentRed,
-                        ),
+                    if (appliedCredit > 0) ...[
+                      const SizedBox(height: 6),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Potong Saldo Kredit Retur:',
+                              style: TextStyle(fontSize: 12, color: AppTheme.accentBlue, fontWeight: FontWeight.w600),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            '-${CurrencyHelper.format(appliedCredit)}',
+                            style: const TextStyle(fontSize: 12, color: AppTheme.accentBlue, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Sisa Harus Dibayar:',
+                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            CurrencyHelper.format(netDue),
+                            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.primaryGreen),
+                          ),
+                        ],
                       ),
                     ],
+                  ],
+                ),
+              ),
+              if (_customerCreditBalance > 0 && _selectedCustomerId != null) ...[
+                const SizedBox(height: 10),
+                Material(
+                  color: AppTheme.accentBlue.withValues(alpha: 0.08),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    side: BorderSide(color: AppTheme.accentBlue.withValues(alpha: 0.35)),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: CheckboxListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                    value: _useCreditBalance,
+                    onChanged: (v) => _toggleUseCredit(v ?? false),
+                    title: const Text('Gunakan Saldo Kredit Retur Pelanggan',
+                        style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+                    subtitle: Text(
+                      'Saldo tersedia: ${CurrencyHelper.format(_customerCreditBalance)}',
+                      style: const TextStyle(fontSize: 11, color: AppTheme.accentBlue),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 14),
-              ] else if (_paymentMethod == 'qris') ...[
+              ],
+              const SizedBox(height: 14),
+
+              if (netDue <= 0.01 && appliedCredit > 0) ...[
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
+                    color: AppTheme.primaryGreenSoft,
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.blue.shade200),
+                    border: Border.all(color: AppTheme.primaryGreen.withValues(alpha: 0.4)),
                   ),
-                  child: Row(
+                  child: const Row(
                     children: [
-                      Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8)),
-                        child: QrImageView(
-                          data: 'KASIRTOKO-QRIS|${pos.grandTotal.toInt()}',
-                          size: 64,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
+                      Icon(Icons.account_balance_wallet_rounded, color: AppTheme.primaryGreen),
+                      SizedBox(width: 8),
                       Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('Pembayaran QRIS',
-                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                            Text(
-                              'Pastikan dana ${CurrencyHelper.format(pos.grandTotal)} telah masuk sebelum menyelesaikan transaksi.',
-                              style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-                            ),
-                          ],
+                        child: Text(
+                          '100% dibayar menggunakan Saldo Kredit Retur pelanggan. Tidak ada kas laci masuk.',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.primaryGreen),
                         ),
                       ),
                     ],
                   ),
                 ),
                 const SizedBox(height: 14),
-              ] else if (_paymentMethod == 'kasbon') ...[
-                TextField(
-                  controller: _cashCtrl,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Uang Muka / DP (Isi 0 jika full tempo)',
-                    prefixText: 'Rp ',
-                  ),
-                  onChanged: (val) {
-                    setState(() {
-                      _paidAmount = double.tryParse(val.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0.0;
-                    });
-                  },
+              ] else ...[
+                // Payment Methods
+                const Text('Metode Pembayaran:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(child: _buildMethodButton('tunai', 'Tunai', Icons.payments_rounded)),
+                    const SizedBox(width: 6),
+                    Expanded(child: _buildMethodButton('qris', 'QRIS', Icons.qr_code_2_rounded)),
+                    const SizedBox(width: 6),
+                    Expanded(child: _buildMethodButton('transfer', 'Transfer', Icons.account_balance_rounded)),
+                    const SizedBox(width: 6),
+                    Expanded(child: _buildMethodButton('kasbon', 'Kasbon', Icons.hourglass_top_rounded)),
+                  ],
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 14),
+
+                if (_paymentMethod == 'tunai') ...[
+                  const Text('Uang Diterima:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: _cashCtrl,
+                    keyboardType: TextInputType.number,
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    decoration: const InputDecoration(prefixText: 'Rp '),
+                    onChanged: (val) {
+                      setState(() {
+                        _paidAmount = double.tryParse(val.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0.0;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      if (!hasExactInNominals && netDue > 0)
+                        _buildQuickCashChip('Uang Pas', netDue),
+                      ...quickNominals.map((amt) {
+                        final isExact = (amt - netDue).abs() < 1;
+                        final formatted = CurrencyHelper.format(amt);
+                        return _buildQuickCashChip(isExact ? '$formatted (Pas)' : formatted, amt);
+                      }),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(10)),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Kembalian:', style: TextStyle(fontWeight: FontWeight.bold)),
+                        Text(
+                          CurrencyHelper.format(change),
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: _paidAmount >= netDue ? AppTheme.primaryGreen : AppTheme.accentRed,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ] else if (_paymentMethod == 'qris') ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.blue.shade200),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8)),
+                          child: QrImageView(
+                            data: 'KASIRTOKO-QRIS|${netDue.toInt()}',
+                            size: 64,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('Pembayaran QRIS',
+                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                              Text(
+                                'Pastikan dana ${CurrencyHelper.format(netDue)} telah masuk sebelum menyelesaikan transaksi.',
+                                style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ] else if (_paymentMethod == 'kasbon') ...[
+                  TextField(
+                    controller: _cashCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Uang Muka / DP (Isi 0 jika full tempo)',
+                      prefixText: 'Rp ',
+                    ),
+                    onChanged: (val) {
+                      setState(() {
+                        _paidAmount = double.tryParse(val.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0.0;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                ],
               ],
 
               if (!cashFlow.isShiftOpen)
@@ -518,6 +673,7 @@ class _PaymentDialogState extends State<PaymentDialog> {
                               _customerNameCtrl.text = picked?.name ?? '';
                               _customerPhoneCtrl.text = picked?.phone ?? '';
                             });
+                            _loadCustomerCredit(custId);
                           },
                         ),
                     ],
@@ -551,6 +707,7 @@ class _PaymentDialogState extends State<PaymentDialog> {
                           _customerPhoneCtrl.text = picked.phone;
                         }
                       });
+                      _loadCustomerCredit(custId);
                     },
                   ),
                   const SizedBox(height: 8),
@@ -605,12 +762,13 @@ class _PaymentDialogState extends State<PaymentDialog> {
         setState(() {
           _paymentMethod = method;
           final pos = Provider.of<PosProvider>(context, listen: false);
+          final net = pos.netPayable;
           if (method == 'kasbon') {
             _paidAmount = 0;
             _cashCtrl.text = '0';
           } else {
-            _paidAmount = pos.grandTotal;
-            _cashCtrl.text = pos.grandTotal.toInt().toString();
+            _paidAmount = net;
+            _cashCtrl.text = net.toInt().toString();
           }
         });
       },
@@ -715,6 +873,7 @@ class _PaymentDialogState extends State<PaymentDialog> {
                     _customerNameCtrl.text = matched.name;
                     _customerPhoneCtrl.text = matched.phone;
                   });
+                  await _loadCustomerCredit(matched.id);
                 }
                 if (ctx.mounted) Navigator.pop(ctx);
               },

@@ -947,10 +947,22 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
     final grossSales = (profit['grossSales'] as num?)?.toDouble() ?? 0.0;
     final discount = (profit['totalDiscount'] as num?)?.toDouble() ?? 0.0;
     final returns = (profit['totalReturn'] as num?)?.toDouble() ?? 0.0;
+    final grossReturns = (profit['grossReturnValue'] as num?)?.toDouble() ?? returns;
+    final exchangeOut = (profit['exchangeOutValue'] as num?)?.toDouble() ?? 0.0;
     final netSales = (profit['netSales'] as num?)?.toDouble() ?? 0.0;
+    final grossSalesHpp = (profit['grossSalesHpp'] as num?)?.toDouble() ?? ((profit['totalHpp'] as num?)?.toDouble() ?? 0.0);
+    final hppRecovered = (profit['hppRecovered'] as num?)?.toDouble() ?? 0.0;
+    final exchangeHpp = (profit['exchangeHpp'] as num?)?.toDouble() ?? 0.0;
+    final damagedLoss = (profit['damagedLoss'] as num?)?.toDouble() ?? 0.0;
     final hpp = (profit['totalHpp'] as num?)?.toDouble() ?? 0.0;
     final grossProfit = (profit['grossProfit'] as num?)?.toDouble() ?? 0.0;
     final margin = (profit['profitMargin'] as num?)?.toDouble() ?? 0.0;
+    final returnsMeta = Map<String, dynamic>.from(_analytics['returns'] as Map? ?? {});
+    final retTunai = (returnsMeta['cashReturnOut'] as num?)?.toDouble() ?? 0.0;
+    final retTransfer = (returnsMeta['transferReturnOut'] as num?)?.toDouble() ?? 0.0;
+    final retQris = (returnsMeta['qrisReturnOut'] as num?)?.toDouble() ?? 0.0;
+    final retCredit = (returnsMeta['creditIssuedTotal'] as num?)?.toDouble() ?? 0.0;
+    final retDebtOffset = (returnsMeta['debtOffsetTotal'] as num?)?.toDouble() ?? 0.0;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(14),
@@ -969,10 +981,20 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
                     const Divider(height: 18),
                     _profitRow('Penjualan Kotor (Gross Sales)', CurrencyHelper.format(grossSales)),
                     _profitRow('Total Diskon & Promo', '-${CurrencyHelper.format(discount)}', color: Colors.pink),
-                    _profitRow('Total Retur Penjualan', '-${CurrencyHelper.format(returns)}', color: AppTheme.accentRed),
+                    _profitRow('Retur Kotor (Tunai/Transfer/Kredit/Tukar)', CurrencyHelper.format(grossReturns), color: AppTheme.accentRed),
+                    if (exchangeOut > 0)
+                      _profitRow('Nilai Barang Keluar Pengganti (Tukar Barang)', '+${CurrencyHelper.format(exchangeOut)}', color: AppTheme.accentBlue),
+                    _profitRow('Dampak Penyesuaian Retur Netto ke Omzet', CurrencyHelper.format(-returns), color: AppTheme.accentRed),
                     const Divider(height: 12),
                     _profitRow('Penjualan Bersih (Net Sales)', CurrencyHelper.format(netSales), bold: true),
-                    _profitRow('Harga Pokok Penjualan (HPP / Modal Barang)', '-${CurrencyHelper.format(hpp)}', color: AppTheme.accentOrange),
+                    _profitRow('HPP Penjualan Awal', '-${CurrencyHelper.format(grossSalesHpp)}', color: AppTheme.accentOrange),
+                    if (hppRecovered > 0)
+                      _profitRow('Pemulihan HPP (Retur Layak Jual)', '+${CurrencyHelper.format(hppRecovered)}', color: AppTheme.primaryGreen),
+                    if (exchangeHpp > 0)
+                      _profitRow('Tambahan HPP Barang Tukar Keluar', '-${CurrencyHelper.format(exchangeHpp)}', color: AppTheme.accentOrange),
+                    _profitRow('Harga Pokok Penjualan Bersih (HPP Adjusted)', '-${CurrencyHelper.format(hpp)}', bold: true, color: AppTheme.accentOrange),
+                    if (damagedLoss > 0)
+                      _profitRow('Nilai Kerugian Modal Barang Rusak / Afkir', CurrencyHelper.format(damagedLoss), color: AppTheme.accentRed),
                     const Divider(height: 14),
                     _profitRow(
                       'LABA KOTOR (GROSS PROFIT)',
@@ -981,6 +1003,16 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
                       color: grossProfit >= 0 ? AppTheme.primaryGreen : AppTheme.accentRed,
                     ),
                     _profitRow('Margin Keuntungan Kotor', '${margin.toStringAsFixed(1)}%', bold: true, color: Colors.teal),
+                    if (grossReturns > 0) ...[
+                      const Divider(height: 18),
+                      const Text('Rincian Penyelesaian Retur Periode Ini:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+                      const SizedBox(height: 4),
+                      if (retTunai > 0) _profitRow('• Refund Tunai (Kas Laci)', CurrencyHelper.format(retTunai)),
+                      if (retTransfer > 0) _profitRow('• Refund Transfer Bank', CurrencyHelper.format(retTransfer)),
+                      if (retQris > 0) _profitRow('• Refund QRIS / E-Wallet', CurrencyHelper.format(retQris)),
+                      if (retCredit > 0) _profitRow('• Diterbitkan ke Saldo Kredit Pelanggan', CurrencyHelper.format(retCredit)),
+                      if (retDebtOffset > 0) _profitRow('• Pemotongan Piutang / Kasbon', CurrencyHelper.format(retDebtOffset)),
+                    ],
                   ],
                 ),
               ),

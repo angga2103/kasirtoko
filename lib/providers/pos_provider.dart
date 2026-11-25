@@ -48,6 +48,7 @@ class PosProvider extends ChangeNotifier {
   String _customerName = 'Pelanggan Umum';
   String _customerPhone = '';
   String _selectedPaymentMethod = 'tunai';
+  double _creditUsed = 0.0;
   double _amountPaid = 0.0;
   bool _isCheckingOut = false;
   final List<HeldOrder> _heldOrders = [];
@@ -63,6 +64,8 @@ class PosProvider extends ChangeNotifier {
   String get customerName => _customerName;
   String get customerPhone => _customerPhone;
   String get selectedPaymentMethod => _selectedPaymentMethod;
+  double get creditUsed => _creditUsed;
+  double get netPayable => (grandTotal - _creditUsed).clamp(0.0, grandTotal);
   double get amountPaid => _amountPaid;
   bool get isCheckingOut => _isCheckingOut;
   List<HeldOrder> get heldOrders => _heldOrders;
@@ -122,8 +125,8 @@ class PosProvider extends ChangeNotifier {
   double get grandTotal => discountedSubtotal + taxAmount;
 
   double get changeAmount {
-    if (_amountPaid >= grandTotal) {
-      return _amountPaid - grandTotal;
+    if (_amountPaid >= netPayable) {
+      return _amountPaid - netPayable;
     }
     return 0.0;
   }
@@ -159,6 +162,11 @@ class PosProvider extends ChangeNotifier {
 
   void setPaymentMethod(String method) {
     _selectedPaymentMethod = method;
+    notifyListeners();
+  }
+
+  void setCreditUsed(double amount) {
+    _creditUsed = amount < 0 ? 0.0 : (amount > grandTotal ? grandTotal : amount);
     notifyListeners();
   }
 
@@ -401,6 +409,7 @@ class PosProvider extends ChangeNotifier {
     _cartItems = [];
     _manualCartDiscount = 0.0;
     _selectedPromo = null;
+    _creditUsed = 0.0;
     _amountPaid = 0.0;
     _customerId = null;
     _customerName = 'Pelanggan Umum';
@@ -473,10 +482,13 @@ class PosProvider extends ChangeNotifier {
           : generateInvoiceNumber();
       final now = DateTime.now();
       final total = grandTotal;
-      final paid = (_selectedPaymentMethod == 'tunai' || _selectedPaymentMethod == 'kasbon')
+      final usedCredit = _creditUsed.clamp(0.0, total);
+      final netDue = (total - usedCredit).clamp(0.0, total);
+      final effectiveMethod = netDue <= 0.01 && usedCredit > 0 ? 'saldo_kredit' : _selectedPaymentMethod;
+      final paid = (effectiveMethod == 'tunai' || effectiveMethod == 'kasbon')
           ? _amountPaid
-          : total;
-      final change = _selectedPaymentMethod == 'tunai' ? changeAmount : 0.0;
+          : netDue;
+      final change = effectiveMethod == 'tunai' ? changeAmount : 0.0;
       final qrPayload = 'TRX|$invoice|${total.toInt()}';
 
       final snapshot = {
@@ -501,7 +513,8 @@ class PosProvider extends ChangeNotifier {
         taxAmount: taxAmount,
         promoName: _selectedPromo?.name ?? '',
         grandTotal: total,
-        paymentMethod: _selectedPaymentMethod,
+        paymentMethod: effectiveMethod,
+        creditUsed: usedCredit,
         amountPaid: paid,
         changeAmount: change,
         status: 'completed',

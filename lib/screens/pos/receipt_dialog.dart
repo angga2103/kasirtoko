@@ -205,6 +205,15 @@ class ReceiptDialog extends StatelessWidget {
                           ),
                         ],
                         if (config.showPaidAndChange) ...[
+                          if (transaction.creditUsed > 0)
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('Potong Saldo Kredit', style: TextStyle(fontSize: 10)),
+                                Text('-${CurrencyHelper.format(transaction.creditUsed)}',
+                                    style: const TextStyle(fontSize: 10)),
+                              ],
+                            ),
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [

@@ -173,6 +173,9 @@ class EscPosGenerator {
       _addLine(out, _lr('Metode', transaction.paymentMethod.toUpperCase(), charWidth));
     }
     if (config.showPaidAndChange) {
+      if (transaction.creditUsed > 0) {
+        _addLine(out, _lr('Potong Kredit', '-${CurrencyHelper.format(transaction.creditUsed)}', charWidth));
+      }
       _addLine(out, _lr('Bayar', CurrencyHelper.format(transaction.amountPaid), charWidth));
       _addLine(out, _lr('Kembali', CurrencyHelper.format(transaction.changeAmount), charWidth));
     }

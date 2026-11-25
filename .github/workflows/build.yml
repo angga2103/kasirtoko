@@ -88,37 +88,35 @@ jobs:
           fi
           echo "Found APK: $APK_FILE"
           mkdir -p build/app/outputs/flutter-apk
-          cp "$APK_FILE" build/app/outputs/flutter-apk/KasirToko-v2.1.0.apk
+          cp "$APK_FILE" build/app/outputs/flutter-apk/KasirToko-v2.2.0.apk
           echo "## ✅ Build Success!" >> $GITHUB_STEP_SUMMARY
-          echo "APK successfully created: \`KasirToko-v2.1.0.apk\` ($(du -h "$APK_FILE" | cut -f1))" >> $GITHUB_STEP_SUMMARY
+          echo "APK successfully created: \`KasirToko-v2.2.0.apk\` ($(du -h "$APK_FILE" | cut -f1))" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: KasirToko-Release-APK
-          path: build/app/outputs/flutter-apk/KasirToko-v2.1.0.apk
+          path: build/app/outputs/flutter-apk/KasirToko-v2.2.0.apk
           retention-days: 14
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v2.1.0
-          name: "KasirToko Universal POS v2.1.0 - Production Release APK"
+          tag_name: v2.2.0
+          name: "KasirToko Universal POS v2.2.0 - Forensic Return & Ledger APK"
           make_latest: true
           body: |
-            ## KasirToko Universal Android POS (Offline-First) v2.1.0
+            ## KasirToko Universal Android POS (Offline-First) v2.2.0
 
-            Unduh file `KasirToko-v2.1.0.apk` di bawah ini dan pasang langsung di HP atau Tablet Android kasir Anda.
+            Unduh file `KasirToko-v2.2.0.apk` di bawah ini dan pasang langsung di HP atau Tablet Android kasir Anda.
 
-            ### Pembaruan Production-Ready v2.1.0:
-            - **Autentikasi & Keamanan Login Modern:** Redesain layar login minimalis bebas kebocoran PIN/password bawaan, hashing salted HMAC-SHA256, ganti password/PIN mandiri, dan pemulihan kredensial offline terotorisasi Owner.
-            - **Kontrol Kasir (POS) Cepat & Uang Tunai Dinamis:** Tambah/kurang/ketik jumlah item langsung di kotak grid produk dengan validasi `trackStock`, nominal cepat adaptif, dan penegakan wajib Shift Kasir Aktif.
-            - **Integritas Keuangan, Kasbon & Pembelian Supplier:** Kasbon khusus pelanggan terdaftar dengan riwayat cicilan, kontrol kecukupan Kas Laci (anti-saldo negatif), buku hutang supplier & pembayaran campuran (`kas_laci`/`transfer`/`hutang`/`campuran`), serta pembatalan (`voidPurchase`) atomik.
-            - **Arus Kas, Retur, Stok Opname & Label Barcode:** Rekonsiliasi Arus Kas bebas hitung ganda (transfer internal netral), riwayat retur & batas sisa kuantitas ketat, Stok Opname scan berkelanjutan anti-duplikat, serta cetak stiker Barcode/QR Thermal ESC/POS dan Grid A4 PDF.
-            - **Cetak Logo Toko & Opsi Struk:** Dukungan bitmap raster ESC/POS `GS v 0` dan *white-matte compositing* PDF untuk logo PNG transparan serta opsi sembunyikan nama toko saat logo tampil (dengan fallback aman).
-            - **Pusat Analitik Bisnis & Audit Trail:** Laporan Penjualan, Produk, Pelanggan, Supplier, dan Keuntungan (HPP & Laba) berbasis query SQLite nyata dengan grafik tren, filter periode lengkap, ekspor PDF & Excel, serta Log Audit *read-only* lengkap dengan filter dan riwayat *before/after*.
-          files: build/app/outputs/flutter-apk/KasirToko-v2.1.0.apk
+            ### Pembaruan Utama v2.2.0 (Audit & Refactoring Sistem Retur):
+            - **Perbaikan Total Tukar Barang (`return_in` + `exchange_out`):** Tukar barang dengan SKU sama maupun berbeda kini selalu memotong stok barang pengganti secara atomik, menghitung selisih harga (bayar tambahan / kembalian / saldo kredit), dan menolak transaksi bila stok pengganti tidak mencukupi.
+            - **Pemisahan Kondisi, Perlakuan Stok & Karantina:** Barang retur dipisahkan jelas antara kondisi (Baik/Perlu Periksa/Kemasan Rusak/Cacat/Rusak), perlakuan stok (Stok Jual/Karantina/Rusak/Tanpa Mutasi), serta mendukung inspeksi & pelepasan karantina.
+            - **Inventory Movements & Customer Credit Ledger (SQLite v4 Non-Destruktif):** Setiap mutasi stok (`sale_out`, `return_in`, `exchange_out`, `quarantine_in`, `quarantine_release`, `damaged_in`, `return_void_reverse`, dll.) serta Saldo Kredit Pelanggan (terpisah tegas dari Piutang Kasbon) terekam di buku besar yang dapat diaudit dan dipakai kembali saat checkout POS.
+            - **Idempotency, Pembatalan Retur (`voidReturnOrder`) & Rekonsiliasi Legacy:** Proteksi request ganda, pembatalan retur atomik yang membalik stok, pengganti, kredit, utang & kas, serta alat inspeksi data retur lama.
+          files: build/app/outputs/flutter-apk/KasirToko-v2.2.0.apk
           draft: false
           prerelease: false
         env:

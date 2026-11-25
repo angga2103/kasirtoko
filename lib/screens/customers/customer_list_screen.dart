@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../database/db_helper.dart';
 import '../../models/customer.dart';
+import '../../models/customer_credit.dart';
 import '../../providers/customer_provider.dart';
 import '../../utils/app_theme.dart';
 import '../../utils/currency_format.dart';
@@ -17,6 +18,7 @@ class CustomerListScreen extends StatefulWidget {
 class _CustomerListScreenState extends State<CustomerListScreen> {
   final TextEditingController _searchCtrl = TextEditingController();
   final Map<int, double> _debtCache = {};
+  final Map<int, double> _creditCache = {};
 
   @override
   void initState() {
@@ -35,11 +37,15 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
         debtMap[c.id!] = await DatabaseHelper.instance.getCustomerOutstandingDebt(c.id!, c.name);
       }
     }
+    final creditMap = await DatabaseHelper.instance.getAllCustomerCreditBalances();
     if (mounted) {
       setState(() {
         _debtCache
           ..clear()
           ..addAll(debtMap);
+        _creditCache
+          ..clear()
+          ..addAll(creditMap);
       });
     }
   }
@@ -54,6 +60,12 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
     final outstanding = c.id != null
         ? await DatabaseHelper.instance.getCustomerOutstandingDebt(c.id!, c.name)
         : 0.0;
+    final creditBal = c.id != null
+        ? await DatabaseHelper.instance.getCustomerCreditBalance(c.id!)
+        : 0.0;
+    final creditLedger = c.id != null
+        ? await DatabaseHelper.instance.getCustomerCreditLedger(c.id!)
+        : <CustomerCreditEntryModel>[];
     final history = c.id != null
         ? await DatabaseHelper.instance.getCustomerPurchaseHistory(c.id!, c.name)
         : [];
@@ -64,96 +76,167 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
       isScrollControlled: true,
       builder: (ctx) => SafeArea(
         child: DraggableScrollableSheet(
-          initialChildSize: 0.65,
-          maxChildSize: 0.9,
+          initialChildSize: 0.72,
+          maxChildSize: 0.92,
           minChildSize: 0.4,
           expand: false,
-          builder: (_, scrollCtrl) => Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    CircleAvatar(
-                      backgroundColor: AppTheme.primaryGreenSoft,
-                      child: Text(
-                        c.name.isNotEmpty ? c.name[0].toUpperCase() : 'P',
-                        style: const TextStyle(color: AppTheme.primaryGreen, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(c.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                          Text(c.phone.isEmpty ? 'Tanpa No. HP' : c.phone, style: const TextStyle(fontSize: 12, color: AppTheme.textMuted)),
-                        ],
-                      ),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        _openCustomerDialog(customer: c);
-                      },
-                      icon: const Icon(Icons.edit_outlined, size: 16),
-                      label: const Text('Edit'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: outstanding > 0 ? AppTheme.accentRedSoft : AppTheme.primaryGreenSoft,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          builder: (_, scrollCtrl) => DefaultTabController(
+            length: 2,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
                     children: [
-                      const Text('Total Sisa Kasbon Aktif:', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-                      Text(
-                        CurrencyHelper.format(outstanding),
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                          color: outstanding > 0 ? AppTheme.accentRed : AppTheme.primaryGreen,
+                      CircleAvatar(
+                        backgroundColor: AppTheme.primaryGreenSoft,
+                        child: Text(
+                          c.name.isNotEmpty ? c.name[0].toUpperCase() : 'P',
+                          style: const TextStyle(color: AppTheme.primaryGreen, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(c.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                            Text(c.phone.isEmpty ? 'Tanpa No. HP' : c.phone, style: const TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+                          ],
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _openCustomerDialog(customer: c);
+                        },
+                        icon: const Icon(Icons.edit_outlined, size: 16),
+                        label: const Text('Edit'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: outstanding > 0 ? AppTheme.accentRedSoft : Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('Piutang Kasbon (Utang)', style: TextStyle(fontSize: 11, color: AppTheme.textMuted)),
+                              const SizedBox(height: 2),
+                              Text(
+                                CurrencyHelper.format(outstanding),
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                  color: outstanding > 0 ? AppTheme.accentRed : AppTheme.textDark,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: creditBal > 0 ? AppTheme.accentBlue.withValues(alpha: 0.1) : Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('Saldo Kredit Retur (Hak)', style: TextStyle(fontSize: 11, color: AppTheme.textMuted)),
+                              const SizedBox(height: 2),
+                              Text(
+                                CurrencyHelper.format(creditBal),
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                  color: creditBal > 0 ? AppTheme.accentBlue : AppTheme.textDark,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ],
                   ),
-                ),
-                const SizedBox(height: 12),
-                Text('Riwayat Transaksi (${history.length}):', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
-                const SizedBox(height: 6),
-                Expanded(
-                  child: history.isEmpty
-                      ? const Center(child: Text('Belum ada riwayat belanja pelanggan ini.', style: TextStyle(color: AppTheme.textMuted)))
-                      : ListView.separated(
-                          controller: scrollCtrl,
-                          itemCount: history.length,
-                          separatorBuilder: (_, __) => const Divider(height: 10),
-                          itemBuilder: (_, i) {
-                            final t = history[i];
-                            return ListTile(
-                              dense: true,
-                              contentPadding: EdgeInsets.zero,
-                              title: Text('#${t.invoiceNumber}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                              subtitle: Text(
-                                '${DateHelper.formatFull(t.date)} • ${t.paymentMethod.toUpperCase()} • ${t.items.length} item',
-                                style: const TextStyle(fontSize: 11),
+                  const SizedBox(height: 8),
+                  TabBar(
+                    labelColor: AppTheme.primaryGreen,
+                    unselectedLabelColor: AppTheme.textMuted,
+                    indicatorColor: AppTheme.primaryGreen,
+                    tabs: [
+                      Tab(text: 'Belanja (${history.length})'),
+                      Tab(text: 'Buku Saldo Kredit (${creditLedger.length})'),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Expanded(
+                    child: TabBarView(
+                      children: [
+                        history.isEmpty
+                            ? const Center(child: Text('Belum ada riwayat belanja pelanggan ini.', style: TextStyle(color: AppTheme.textMuted)))
+                            : ListView.separated(
+                                controller: scrollCtrl,
+                                itemCount: history.length,
+                                separatorBuilder: (_, __) => const Divider(height: 10),
+                                itemBuilder: (_, i) {
+                                  final t = history[i];
+                                  return ListTile(
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    title: Text('#${t.invoiceNumber}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                    subtitle: Text(
+                                      '${DateHelper.formatFull(t.date)} • ${t.paymentMethod.toUpperCase()} • ${t.items.length} item',
+                                      style: const TextStyle(fontSize: 11),
+                                    ),
+                                    trailing: Text(
+                                      CurrencyHelper.format(t.grandTotal),
+                                      style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.primaryGreen),
+                                    ),
+                                  );
+                                },
                               ),
-                              trailing: Text(
-                                CurrencyHelper.format(t.grandTotal),
-                                style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.primaryGreen),
+                        creditLedger.isEmpty
+                            ? const Center(child: Text('Belum ada mutasi saldo kredit retur.', style: TextStyle(color: AppTheme.textMuted)))
+                            : ListView.separated(
+                                itemCount: creditLedger.length,
+                                separatorBuilder: (_, __) => const Divider(height: 10),
+                                itemBuilder: (_, i) {
+                                  final e = creditLedger[i];
+                                  final isPlus = e.isAddition;
+                                  return ListTile(
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    title: Text(
+                                      '${isPlus ? "+" : "-"}${CurrencyHelper.format(e.amount)} • ${e.referenceNumber}',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: isPlus ? AppTheme.primaryGreen : AppTheme.accentRed,
+                                      ),
+                                    ),
+                                    subtitle: Text(
+                                      '${DateHelper.formatFull(e.createdAt)} • ${e.note}\nSaldo: ${CurrencyHelper.format(e.balanceBefore)} -> ${CurrencyHelper.format(e.balanceAfter)}',
+                                      style: const TextStyle(fontSize: 11),
+                                    ),
+                                  );
+                                },
                               ),
-                            );
-                          },
-                        ),
-                ),
-              ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -283,6 +366,7 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
                         itemBuilder: (_, index) {
                           final c = prov.customers[index];
                           final debtBal = c.id != null ? (_debtCache[c.id!] ?? 0.0) : 0.0;
+                          final creditBal = c.id != null ? (_creditCache[c.id!] ?? 0.0) : 0.0;
                           return Card(
                             child: ListTile(
                               leading: CircleAvatar(
@@ -302,8 +386,13 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
                                   ),
                                   if (debtBal > 0)
                                     Text(
-                                      'Kasbon Aktif: ${CurrencyHelper.format(debtBal)}',
+                                      'Piutang Kasbon: ${CurrencyHelper.format(debtBal)}',
                                       style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: AppTheme.accentRed),
+                                    ),
+                                  if (creditBal > 0)
+                                    Text(
+                                      'Saldo Kredit Retur: ${CurrencyHelper.format(creditBal)}',
+                                      style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: AppTheme.accentBlue),
                                     ),
                                 ],
                               ),

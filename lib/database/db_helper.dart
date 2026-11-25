@@ -8,15 +8,19 @@ import '../models/attendance.dart';
 import '../models/audit_log.dart';
 import '../models/cash_flow.dart';
 import '../models/customer.dart';
+import '../models/customer_credit.dart';
 import '../models/customer_debt.dart';
+import '../models/inventory_movement.dart';
 import '../models/printer_device.dart';
 import '../models/product.dart';
 import '../models/product_batch.dart';
 import '../models/product_unit.dart';
 import '../models/promo.dart';
 import '../models/purchase.dart';
+import '../models/return_exchange_item.dart';
 import '../models/return_item.dart';
 import '../models/return_order.dart';
+import '../models/return_settlement.dart';
 import '../models/service_order.dart';
 import '../models/shift.dart';
 import '../models/stock_opname.dart';
@@ -80,7 +84,7 @@ class DatabaseHelper {
     }
     _database = await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -99,7 +103,7 @@ class DatabaseHelper {
       final dbDir = await getApplicationDocumentsDirectory();
       path = p.join(dbDir.path, filePath);
 
-      // Pre-migration safety backup for existing databases
+      // Pre-migration safety backups for existing databases
       final dbFile = File(path);
       final preV3Backup = File(p.join(dbDir.path, 'kasirtoko_pre_v3_backup.db'));
       if (await dbFile.exists() && !await preV3Backup.exists()) {
@@ -107,11 +111,17 @@ class DatabaseHelper {
           await dbFile.copy(preV3Backup.path);
         } catch (_) {}
       }
+      final preV4Backup = File(p.join(dbDir.path, 'kasirtoko_pre_v4_backup.db'));
+      if (await dbFile.exists() && !await preV4Backup.exists()) {
+        try {
+          await dbFile.copy(preV4Backup.path);
+        } catch (_) {}
+      }
     }
 
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -247,6 +257,141 @@ class DatabaseHelper {
 
       await _createV3NewTables(db);
     }
+
+    if (oldVersion < 4) {
+      // Non-destructive v4 forensic return & stock ledger upgrade
+      await _addColumnIfMissing(db, 'products', 'quarantine_stock', 'REAL NOT NULL DEFAULT 0.0');
+      await _addColumnIfMissing(db, 'products', 'damaged_stock', 'REAL NOT NULL DEFAULT 0.0');
+
+      await _addColumnIfMissing(db, 'transactions', 'credit_used', 'REAL NOT NULL DEFAULT 0.0');
+      await _addColumnIfMissing(db, 'shifts', 'total_sales_credit', 'REAL NOT NULL DEFAULT 0.0');
+
+      await _addColumnIfMissing(db, 'return_orders', 'customer_id', 'INTEGER');
+      await _addColumnIfMissing(db, 'return_orders', 'customer_name', "TEXT NOT NULL DEFAULT 'Pelanggan Umum'");
+      await _addColumnIfMissing(db, 'return_orders', 'reason', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'return_orders', 'status', "TEXT NOT NULL DEFAULT 'completed'");
+      await _addColumnIfMissing(db, 'return_orders', 'exchange_total', 'REAL NOT NULL DEFAULT 0.0');
+      await _addColumnIfMissing(db, 'return_orders', 'difference_amount', 'REAL NOT NULL DEFAULT 0.0');
+      await _addColumnIfMissing(db, 'return_orders', 'difference_payment_method', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'return_orders', 'idempotency_key', 'TEXT');
+      await _addColumnIfMissing(db, 'return_orders', 'voided_at', 'TEXT');
+      await _addColumnIfMissing(db, 'return_orders', 'voided_by', 'INTEGER');
+      await _addColumnIfMissing(db, 'return_orders', 'voided_by_name', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'return_orders', 'void_reason', "TEXT NOT NULL DEFAULT ''");
+
+      await _addColumnIfMissing(db, 'return_items', 'sku', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'return_items', 'cost_price', 'REAL NOT NULL DEFAULT 0.0');
+      await _addColumnIfMissing(db, 'return_items', 'purchased_qty', 'REAL NOT NULL DEFAULT 0.0');
+      await _addColumnIfMissing(db, 'return_items', 'previously_returned_qty', 'REAL NOT NULL DEFAULT 0.0');
+      await _addColumnIfMissing(db, 'return_items', 'stock_treatment', "TEXT NOT NULL DEFAULT 'restock_sellable'");
+
+      // Backfill stock_treatment on legacy rows accurately without altering historical stock balances
+      await db.rawUpdate(
+        "UPDATE return_items SET stock_treatment = CASE WHEN condition = 'baik' THEN 'restock_sellable' ELSE 'damaged' END WHERE stock_treatment IS NULL OR stock_treatment = '' OR (condition != 'baik' AND stock_treatment = 'restock_sellable')",
+      );
+
+      // Backfill customer_id & customer_name onto legacy return_orders from transactions when missing
+      await db.rawUpdate('''
+        UPDATE return_orders
+        SET customer_id = COALESCE(
+              customer_id,
+              (SELECT t.customer_id FROM transactions t WHERE t.id = return_orders.transaction_id)
+            ),
+            customer_name = COALESCE(
+              NULLIF(customer_name, ''),
+              (SELECT t.customer_name FROM transactions t WHERE t.id = return_orders.transaction_id),
+              'Pelanggan Umum'
+            )
+      ''');
+
+      await _createV4NewTables(db);
+    }
+  }
+
+  Future<void> _createV4NewTables(Database db) async {
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_return_orders_idempotency
+      ON return_orders (idempotency_key)
+      WHERE idempotency_key IS NOT NULL AND idempotency_key != ''
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS return_exchange_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        return_order_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
+        sku TEXT NOT NULL DEFAULT '',
+        product_name TEXT NOT NULL,
+        unit_name TEXT NOT NULL DEFAULT 'Pcs',
+        conversion_factor REAL NOT NULL DEFAULT 1.0,
+        qty REAL NOT NULL,
+        unit_price REAL NOT NULL,
+        cost_price REAL NOT NULL DEFAULT 0.0,
+        subtotal REAL NOT NULL,
+        FOREIGN KEY (return_order_id) REFERENCES return_orders (id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS return_settlements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        return_order_id INTEGER NOT NULL,
+        settlement_type TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        method TEXT NOT NULL,
+        amount REAL NOT NULL,
+        account_name TEXT NOT NULL DEFAULT '',
+        reference_number TEXT NOT NULL DEFAULT '',
+        shift_id INTEGER,
+        customer_id INTEGER,
+        cash_flow_id INTEGER,
+        note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (return_order_id) REFERENCES return_orders (id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS inventory_movements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL,
+        sku TEXT NOT NULL DEFAULT '',
+        product_name TEXT NOT NULL DEFAULT '',
+        movement_type TEXT NOT NULL,
+        bucket TEXT NOT NULL DEFAULT 'sellable',
+        qty_delta REAL NOT NULL,
+        stock_before REAL NOT NULL,
+        stock_after REAL NOT NULL,
+        bucket_before REAL NOT NULL DEFAULT 0.0,
+        bucket_after REAL NOT NULL DEFAULT 0.0,
+        reference_type TEXT NOT NULL DEFAULT '',
+        reference_id INTEGER,
+        reference_number TEXT NOT NULL DEFAULT '',
+        user_id INTEGER NOT NULL DEFAULT 1,
+        user_name TEXT NOT NULL DEFAULT 'Sistem',
+        note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS customer_credit_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER NOT NULL,
+        customer_name TEXT NOT NULL DEFAULT '',
+        entry_type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        balance_before REAL NOT NULL DEFAULT 0.0,
+        balance_after REAL NOT NULL DEFAULT 0.0,
+        reference_type TEXT NOT NULL DEFAULT '',
+        reference_id INTEGER,
+        reference_number TEXT NOT NULL DEFAULT '',
+        user_id INTEGER NOT NULL DEFAULT 1,
+        user_name TEXT NOT NULL DEFAULT 'Sistem',
+        note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      )
+    ''');
   }
 
   Future<void> _createV3NewTables(Database db) async {
@@ -464,6 +609,8 @@ class DatabaseHelper {
         cost_price REAL NOT NULL,
         selling_price REAL NOT NULL,
         stock REAL NOT NULL,
+        quarantine_stock REAL NOT NULL DEFAULT 0.0,
+        damaged_stock REAL NOT NULL DEFAULT 0.0,
         min_stock_alert REAL NOT NULL,
         image_path TEXT,
         is_active INTEGER NOT NULL DEFAULT 1,
@@ -526,6 +673,7 @@ class DatabaseHelper {
         promo_name TEXT NOT NULL DEFAULT '',
         grand_total REAL NOT NULL,
         payment_method TEXT NOT NULL,
+        credit_used REAL NOT NULL DEFAULT 0.0,
         amount_paid REAL NOT NULL,
         change_amount REAL NOT NULL,
         status TEXT NOT NULL,
@@ -563,9 +711,21 @@ class DatabaseHelper {
         date TEXT NOT NULL,
         cashier_id INTEGER NOT NULL,
         cashier_name TEXT NOT NULL,
+        customer_id INTEGER,
+        customer_name TEXT NOT NULL DEFAULT 'Pelanggan Umum',
         total_refund REAL NOT NULL,
         refund_method TEXT NOT NULL,
-        note TEXT
+        reason TEXT NOT NULL DEFAULT '',
+        note TEXT,
+        status TEXT NOT NULL DEFAULT 'completed',
+        exchange_total REAL NOT NULL DEFAULT 0.0,
+        difference_amount REAL NOT NULL DEFAULT 0.0,
+        difference_payment_method TEXT NOT NULL DEFAULT '',
+        idempotency_key TEXT,
+        voided_at TEXT,
+        voided_by INTEGER,
+        voided_by_name TEXT NOT NULL DEFAULT '',
+        void_reason TEXT NOT NULL DEFAULT ''
       )
     ''');
 
@@ -574,13 +734,18 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         return_order_id INTEGER NOT NULL,
         product_id INTEGER NOT NULL,
+        sku TEXT NOT NULL DEFAULT '',
         product_name TEXT NOT NULL,
         unit_name TEXT NOT NULL,
         conversion_factor REAL NOT NULL DEFAULT 1.0,
+        purchased_qty REAL NOT NULL DEFAULT 0.0,
+        previously_returned_qty REAL NOT NULL DEFAULT 0.0,
         return_qty REAL NOT NULL,
         refund_price REAL NOT NULL,
+        cost_price REAL NOT NULL DEFAULT 0.0,
         subtotal REAL NOT NULL,
         condition TEXT NOT NULL,
+        stock_treatment TEXT NOT NULL DEFAULT 'restock_sellable',
         FOREIGN KEY (return_order_id) REFERENCES return_orders (id) ON DELETE CASCADE
       )
     ''');
@@ -597,6 +762,7 @@ class DatabaseHelper {
         total_sales_qris REAL NOT NULL DEFAULT 0.0,
         total_sales_transfer REAL NOT NULL DEFAULT 0.0,
         total_sales_kasbon REAL NOT NULL DEFAULT 0.0,
+        total_sales_credit REAL NOT NULL DEFAULT 0.0,
         total_cash_in REAL NOT NULL DEFAULT 0.0,
         total_cash_out REAL NOT NULL DEFAULT 0.0,
         total_return_cash REAL NOT NULL DEFAULT 0.0,
@@ -735,6 +901,7 @@ class DatabaseHelper {
 
     await _createV2NewTables(db);
     await _createV3NewTables(db);
+    await _createV4NewTables(db);
     await _seedInitialData(db);
   }
 
@@ -1201,6 +1368,175 @@ class DatabaseHelper {
     ''');
   }
 
+  // ================= INVENTORY LEDGER & CREDIT HELPERS =================
+  Future<void> _recordStockMovement(
+    Transaction txn, {
+    required int productId,
+    required String movementType,
+    String bucket = 'sellable',
+    required double qtyDelta,
+    String referenceType = '',
+    int? referenceId,
+    String referenceNumber = '',
+    int userId = 1,
+    String userName = 'Sistem',
+    String note = '',
+    bool enforceNonNegative = true,
+    bool recordWhenUntracked = false,
+  }) async {
+    final prodRows = await txn.query('products', where: 'id = ?', whereArgs: [productId], limit: 1);
+    if (prodRows.isEmpty) {
+      throw StateError('Produk ID $productId tidak ditemukan di database.');
+    }
+    final p = prodRows.first;
+    final sku = (p['code'] ?? '').toString();
+    final prodName = (p['name'] ?? '').toString();
+    final tracksStock = (p['track_stock'] ?? 1) == 1 && (p['is_service'] ?? 0) != 1;
+    final currentSellable = (p['stock'] as num?)?.toDouble() ?? 0.0;
+    final currentQuarantine = (p['quarantine_stock'] as num?)?.toDouble() ?? 0.0;
+    final currentDamaged = (p['damaged_stock'] as num?)?.toDouble() ?? 0.0;
+
+    if (!tracksStock || bucket == 'none') {
+      if (recordWhenUntracked || bucket == 'none') {
+        await txn.insert('inventory_movements', {
+          'product_id': productId,
+          'sku': sku,
+          'product_name': prodName,
+          'movement_type': !tracksStock ? MovementTypes.noStockChange : movementType,
+          'bucket': 'none',
+          'qty_delta': 0.0,
+          'stock_before': currentSellable,
+          'stock_after': currentSellable,
+          'bucket_before': 0.0,
+          'bucket_after': 0.0,
+          'reference_type': referenceType,
+          'reference_id': referenceId,
+          'reference_number': referenceNumber,
+          'user_id': userId,
+          'user_name': userName,
+          'note': note,
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      }
+      return;
+    }
+
+    late final String col;
+    late final double bucketBefore;
+    switch (bucket) {
+      case 'quarantine':
+        col = 'quarantine_stock';
+        bucketBefore = currentQuarantine;
+        break;
+      case 'damaged':
+        col = 'damaged_stock';
+        bucketBefore = currentDamaged;
+        break;
+      case 'sellable':
+      default:
+        col = 'stock';
+        bucketBefore = currentSellable;
+        break;
+    }
+
+    final rawNext = bucketBefore + qtyDelta;
+    if (enforceNonNegative && rawNext < -0.0001) {
+      final bucketLabel = bucket == 'sellable'
+          ? 'stok jual'
+          : (bucket == 'quarantine' ? 'stok karantina' : 'stok rusak');
+      throw StateError(
+        'Mutasi $bucketLabel "$prodName" gagal: tersedia ${bucketBefore.toStringAsFixed(1)}, perubahan ${qtyDelta.toStringAsFixed(1)}.',
+      );
+    }
+    final bucketAfter = rawNext < 0 ? 0.0 : rawNext;
+    await txn.update(
+      'products',
+      {col: bucketAfter},
+      where: 'id = ?',
+      whereArgs: [productId],
+    );
+
+    final stockAfter = bucket == 'sellable' ? bucketAfter : currentSellable;
+    await txn.insert('inventory_movements', {
+      'product_id': productId,
+      'sku': sku,
+      'product_name': prodName,
+      'movement_type': movementType,
+      'bucket': bucket,
+      'qty_delta': qtyDelta,
+      'stock_before': currentSellable,
+      'stock_after': stockAfter,
+      'bucket_before': bucketBefore,
+      'bucket_after': bucketAfter,
+      'reference_type': referenceType,
+      'reference_id': referenceId,
+      'reference_number': referenceNumber,
+      'user_id': userId,
+      'user_name': userName,
+      'note': note,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  Future<double> _getCustomerCreditBalanceTxn(DatabaseExecutor db, int customerId) async {
+    final rows = await db.rawQuery('''
+      SELECT COALESCE(SUM(
+        CASE
+          WHEN entry_type IN ('credit_issued', 'manual_adjustment') THEN amount
+          WHEN entry_type IN ('credit_redeemed', 'credit_reversed') THEN -amount
+          ELSE 0
+        END
+      ), 0.0) as bal
+      FROM customer_credit_ledger
+      WHERE customer_id = ?
+    ''', [customerId]);
+    final bal = (rows.first['bal'] as num?)?.toDouble() ?? 0.0;
+    return bal < 0 ? 0.0 : bal;
+  }
+
+  Future<double> _appendCustomerCreditLedgerTxn(
+    Transaction txn, {
+    required int customerId,
+    required String customerName,
+    required String entryType,
+    required double amount,
+    String referenceType = '',
+    int? referenceId,
+    String referenceNumber = '',
+    int userId = 1,
+    String userName = 'Sistem',
+    String note = '',
+  }) async {
+    if (amount <= 0) {
+      throw StateError('Nominal mutasi saldo kredit harus lebih dari Rp 0.');
+    }
+    final before = await _getCustomerCreditBalanceTxn(txn, customerId);
+    final isDeduction = entryType == CustomerCreditTypes.creditRedeemed ||
+        entryType == CustomerCreditTypes.creditReversed;
+    if (isDeduction && before + 0.001 < amount) {
+      throw StateError(
+        'Saldo kredit pelanggan "$customerName" tidak mencukupi (Tersedia: Rp ${before.toInt()}, Dibutuhkan: Rp ${amount.toInt()}).',
+      );
+    }
+    final after = isDeduction ? (before - amount).clamp(0.0, double.infinity) : (before + amount);
+    await txn.insert('customer_credit_ledger', {
+      'customer_id': customerId,
+      'customer_name': customerName,
+      'entry_type': entryType,
+      'amount': amount,
+      'balance_before': before,
+      'balance_after': after,
+      'reference_type': referenceType,
+      'reference_id': referenceId,
+      'reference_number': referenceNumber,
+      'user_id': userId,
+      'user_name': userName,
+      'note': note,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+    return after;
+  }
+
   // ================= TRANSACTIONS & SHIFT SYNC =================
   Future<void> _ensureSufficientShiftCash(Transaction txn, int? shiftId, double amount) async {
     if (amount <= 0) return;
@@ -1235,18 +1571,42 @@ class DatabaseHelper {
         throw StateError('Shift tidak valid atau sudah ditutup. Silakan buka shift aktif terlebih dahulu.');
       }
 
-      // 2. Strict Registered Customer Rule for Kasbon
-      if (trx.paymentMethod == 'kasbon') {
+      // 2. Strict Registered Customer Rule for Kasbon or Saldo Kredit
+      final needsRegisteredCust = trx.paymentMethod == 'kasbon' ||
+          trx.paymentMethod == 'saldo_kredit' ||
+          trx.creditUsed > 0;
+      String resolvedCustomerName = trx.customerName;
+      if (needsRegisteredCust) {
         if (trx.customerId == null) {
-          throw StateError('Kasbon hanya diperbolehkan untuk pelanggan yang sudah terdaftar.');
+          throw StateError(
+            trx.paymentMethod == 'kasbon'
+                ? 'Kasbon hanya diperbolehkan untuk pelanggan yang sudah terdaftar.'
+                : 'Penggunaan Saldo Kredit hanya diperbolehkan untuk pelanggan yang sudah terdaftar.',
+          );
         }
         final custRows = await txn.query('customers', where: 'id = ?', whereArgs: [trx.customerId], limit: 1);
         if (custRows.isEmpty) {
-          throw StateError('Pelanggan kasbon tidak ditemukan dalam database pelanggan terdaftar.');
+          throw StateError('Pelanggan tidak ditemukan dalam database pelanggan terdaftar.');
         }
-        final regName = (custRows.first['name'] ?? '').toString().trim().toLowerCase();
-        if (regName.isEmpty || regName == 'pelanggan umum') {
-          throw StateError('Pelanggan Umum tidak diperbolehkan melakukan kasbon. Pilih pelanggan terdaftar.');
+        final regName = (custRows.first['name'] ?? '').toString().trim();
+        if (regName.isEmpty || regName.toLowerCase() == 'pelanggan umum') {
+          throw StateError('Pelanggan Umum tidak diperbolehkan memakai Kasbon atau Saldo Kredit. Pilih pelanggan terdaftar.');
+        }
+        resolvedCustomerName = regName;
+      }
+
+      final double normalizedCreditUsed = trx.paymentMethod == 'saldo_kredit'
+          ? (trx.creditUsed > 0 ? trx.creditUsed : trx.grandTotal)
+          : trx.creditUsed;
+      if (normalizedCreditUsed < 0 || normalizedCreditUsed > trx.grandTotal + 0.01) {
+        throw StateError('Nominal saldo kredit yang digunakan tidak valid terhadap total transaksi.');
+      }
+      if (normalizedCreditUsed > 0 && trx.customerId != null) {
+        final curBal = await _getCustomerCreditBalanceTxn(txn, trx.customerId!);
+        if (curBal + 0.001 < normalizedCreditUsed) {
+          throw StateError(
+            'Saldo kredit pelanggan "$resolvedCustomerName" tidak mencukupi (Tersedia: Rp ${curBal.toInt()}, Dibutuhkan: Rp ${normalizedCreditUsed.toInt()}).',
+          );
         }
       }
 
@@ -1272,6 +1632,7 @@ class DatabaseHelper {
 
       final trxMap = trx.toMap();
       trxMap['shift_id'] = targetShiftId;
+      trxMap['credit_used'] = normalizedCreditUsed;
       if (trx.customerId != null) trxMap['customer_id'] = trx.customerId;
       final trxId = await txn.insert('transactions', trxMap);
 
@@ -1292,37 +1653,64 @@ class DatabaseHelper {
         });
 
         if (!item.isService) {
-          final prodRows = await txn.query('products', columns: ['track_stock'], where: 'id = ?', whereArgs: [item.productId], limit: 1);
-          final tracksStock = prodRows.isEmpty || (prodRows.first['track_stock'] ?? 1) == 1;
-          if (tracksStock) {
-            await txn.rawUpdate(
-              'UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?',
-              [item.baseStockQty, item.productId],
-            );
-          }
+          await _recordStockMovement(
+            txn,
+            productId: item.productId,
+            movementType: MovementTypes.saleOut,
+            bucket: 'sellable',
+            qtyDelta: -item.baseStockQty,
+            referenceType: 'transaction',
+            referenceId: trxId,
+            referenceNumber: trx.invoiceNumber,
+            userId: trx.cashierId,
+            userName: trx.cashierName,
+            note: 'Penjualan Nota #${trx.invoiceNumber} (${item.qty} ${item.unitName})',
+          );
         }
       }
 
-      // 4. Sync active shift sales totals
-      if (trx.paymentMethod == 'tunai') {
+      // 4. Deduct customer credit ledger if used
+      if (normalizedCreditUsed > 0 && trx.customerId != null) {
+        await _appendCustomerCreditLedgerTxn(
+          txn,
+          customerId: trx.customerId!,
+          customerName: resolvedCustomerName,
+          entryType: CustomerCreditTypes.creditRedeemed,
+          amount: normalizedCreditUsed,
+          referenceType: 'transaction',
+          referenceId: trxId,
+          referenceNumber: trx.invoiceNumber,
+          userId: trx.cashierId,
+          userName: trx.cashierName,
+          note: 'Dipakai belanja Nota #${trx.invoiceNumber}',
+        );
+        await txn.rawUpdate(
+          'UPDATE shifts SET total_sales_credit = total_sales_credit + ? WHERE id = ?',
+          [normalizedCreditUsed, targetShiftId],
+        );
+      }
+
+      // 5. Sync active shift sales totals for remaining net due after credit
+      final remainingDue = (trx.grandTotal - normalizedCreditUsed).clamp(0.0, double.infinity);
+      if (trx.paymentMethod == 'tunai' && remainingDue > 0) {
         await txn.rawUpdate(
           'UPDATE shifts SET total_sales_cash = total_sales_cash + ? WHERE id = ?',
-          [trx.grandTotal, targetShiftId],
+          [remainingDue, targetShiftId],
         );
-      } else if (trx.paymentMethod == 'qris') {
+      } else if (trx.paymentMethod == 'qris' && remainingDue > 0) {
         await txn.rawUpdate(
           'UPDATE shifts SET total_sales_qris = total_sales_qris + ? WHERE id = ?',
-          [trx.grandTotal, targetShiftId],
+          [remainingDue, targetShiftId],
         );
-      } else if (trx.paymentMethod == 'transfer') {
+      } else if (trx.paymentMethod == 'transfer' && remainingDue > 0) {
         await txn.rawUpdate(
           'UPDATE shifts SET total_sales_transfer = total_sales_transfer + ? WHERE id = ?',
-          [trx.grandTotal, targetShiftId],
+          [remainingDue, targetShiftId],
         );
-      } else if (trx.paymentMethod == 'kasbon') {
+      } else if (trx.paymentMethod == 'kasbon' && remainingDue > 0) {
         await txn.rawUpdate(
           'UPDATE shifts SET total_sales_kasbon = total_sales_kasbon + ? WHERE id = ?',
-          [trx.grandTotal, targetShiftId],
+          [remainingDue, targetShiftId],
         );
         if (trx.amountPaid > 0) {
           await txn.rawUpdate(
@@ -1332,15 +1720,15 @@ class DatabaseHelper {
         }
       }
 
-      // 5. Record Kasbon ledger & initial DP payment history
-      if (trx.paymentMethod == 'kasbon') {
+      // 6. Record Kasbon ledger & initial DP payment history
+      if (trx.paymentMethod == 'kasbon' && remainingDue > 0) {
         final dueDate = DateTime.now().add(const Duration(days: 30));
         final debtId = await txn.insert('customer_debts', {
           'customer_id': trx.customerId,
           'customer_name': trx.customerName,
           'customer_phone': trx.customerPhone,
           'invoice_number': trx.invoiceNumber,
-          'total_debt': trx.grandTotal,
+          'total_debt': remainingDue,
           'paid_debt': trx.amountPaid,
           'transaction_date': trx.date.toIso8601String(),
           'due_date': dueDate.toIso8601String(),
@@ -1393,7 +1781,7 @@ class DatabaseHelper {
         SELECT ri.product_id, ri.unit_name, SUM(ri.return_qty) as total_ret
         FROM return_items ri
         JOIN return_orders ro ON ri.return_order_id = ro.id
-        WHERE ro.transaction_id = ?
+        WHERE ro.transaction_id = ? AND COALESCE(ro.status, 'completed') != 'voided'
         GROUP BY ri.product_id, ri.unit_name
       ''', [trxId]);
       final returnedMap = <String, double>{
@@ -1405,45 +1793,73 @@ class DatabaseHelper {
       for (final m in itemsRes) {
         final item = TransactionItemModel.fromMap(m);
         if (!item.isService) {
-          final prodRows = await txn.query('products', columns: ['track_stock'], where: 'id = ?', whereArgs: [item.productId], limit: 1);
-          final tracksStock = prodRows.isEmpty || (prodRows.first['track_stock'] ?? 1) == 1;
-          if (tracksStock) {
-            final key = '${item.productId}_${item.unitName}';
-            final retQty = returnedMap[key] ?? 0.0;
-            final unreturnedQty = (item.qty - retQty).clamp(0.0, item.qty);
-            final restoreBase = unreturnedQty * item.conversionFactor;
-            if (restoreBase > 0) {
-              await txn.rawUpdate(
-                'UPDATE products SET stock = stock + ? WHERE id = ?',
-                [restoreBase, item.productId],
-              );
-            }
+          final key = '${item.productId}_${item.unitName}';
+          final retQty = returnedMap[key] ?? 0.0;
+          final unreturnedQty = (item.qty - retQty).clamp(0.0, item.qty);
+          final restoreBase = unreturnedQty * item.conversionFactor;
+          if (restoreBase > 0) {
+            await _recordStockMovement(
+              txn,
+              productId: item.productId,
+              movementType: MovementTypes.voidRestore,
+              bucket: 'sellable',
+              qtyDelta: restoreBase,
+              referenceType: 'void_transaction',
+              referenceId: trxId,
+              referenceNumber: trx.invoiceNumber,
+              userId: trx.cashierId,
+              userName: trx.cashierName,
+              note: 'Pembalikan stok void nota #${trx.invoiceNumber} (sisa belum retur: $unreturnedQty ${item.unitName})',
+            );
           }
         }
       }
 
+      if (trx.creditUsed > 0 && trx.customerId != null) {
+        await _appendCustomerCreditLedgerTxn(
+          txn,
+          customerId: trx.customerId!,
+          customerName: trx.customerName,
+          entryType: CustomerCreditTypes.creditIssued,
+          amount: trx.creditUsed,
+          referenceType: 'void_transaction',
+          referenceId: trxId,
+          referenceNumber: trx.invoiceNumber,
+          userId: trx.cashierId,
+          userName: trx.cashierName,
+          note: 'Pengembalian saldo kredit dari pembatalan Nota #${trx.invoiceNumber}',
+        );
+      }
+
       await txn.update('transactions', {'status': 'voided'}, where: 'id = ?', whereArgs: [trxId]);
 
+      final netDue = (trx.grandTotal - trx.creditUsed).clamp(0.0, double.infinity);
       if (targetShiftId != null) {
-        if (trx.paymentMethod == 'tunai') {
+        if (trx.creditUsed > 0) {
+          await txn.rawUpdate(
+            'UPDATE shifts SET total_sales_credit = MAX(0, total_sales_credit - ?) WHERE id = ?',
+            [trx.creditUsed, targetShiftId],
+          );
+        }
+        if (trx.paymentMethod == 'tunai' && netDue > 0) {
           await txn.rawUpdate(
             'UPDATE shifts SET total_sales_cash = MAX(0, total_sales_cash - ?) WHERE id = ?',
-            [trx.grandTotal, targetShiftId],
+            [netDue, targetShiftId],
           );
-        } else if (trx.paymentMethod == 'qris') {
+        } else if (trx.paymentMethod == 'qris' && netDue > 0) {
           await txn.rawUpdate(
             'UPDATE shifts SET total_sales_qris = MAX(0, total_sales_qris - ?) WHERE id = ?',
-            [trx.grandTotal, targetShiftId],
+            [netDue, targetShiftId],
           );
-        } else if (trx.paymentMethod == 'transfer') {
+        } else if (trx.paymentMethod == 'transfer' && netDue > 0) {
           await txn.rawUpdate(
             'UPDATE shifts SET total_sales_transfer = MAX(0, total_sales_transfer - ?) WHERE id = ?',
-            [trx.grandTotal, targetShiftId],
+            [netDue, targetShiftId],
           );
-        } else if (trx.paymentMethod == 'kasbon') {
+        } else if (trx.paymentMethod == 'kasbon' && netDue > 0) {
           await txn.rawUpdate(
             'UPDATE shifts SET total_sales_kasbon = MAX(0, total_sales_kasbon - ?) WHERE id = ?',
-            [trx.grandTotal, targetShiftId],
+            [netDue, targetShiftId],
           );
         }
       }
@@ -1568,42 +1984,78 @@ class DatabaseHelper {
     return list;
   }
 
-  Future<List<ReturnOrderModel>> getReturnOrders({DateTime? start, DateTime? end, int limit = 100}) async {
+  Future<List<ReturnOrderModel>> getReturnOrders({
+    DateTime? start,
+    DateTime? end,
+    int limit = 100,
+    bool includeVoided = true,
+  }) async {
     final db = await database;
-    String? where;
-    List<dynamic>? whereArgs;
+    final whereParts = <String>[];
+    final whereArgs = <dynamic>[];
     if (start != null && end != null) {
-      where = 'date >= ? AND date <= ?';
-      whereArgs = [
+      whereParts.add('date >= ? AND date <= ?');
+      whereArgs.addAll([
         DateTime(start.year, start.month, start.day).toIso8601String(),
         DateTime(end.year, end.month, end.day, 23, 59, 59, 999).toIso8601String(),
-      ];
+      ]);
+    }
+    if (!includeVoided) {
+      whereParts.add("COALESCE(status, 'completed') != 'voided'");
     }
     final res = await db.query(
       'return_orders',
-      where: where,
-      whereArgs: whereArgs,
-      orderBy: 'date DESC',
+      where: whereParts.isEmpty ? null : whereParts.join(' AND '),
+      whereArgs: whereArgs.isEmpty ? null : whereArgs,
+      orderBy: 'date DESC, id DESC',
       limit: limit,
     );
     final List<ReturnOrderModel> list = [];
     for (final m in res) {
-      final ro = ReturnOrderModel.fromMap(m);
-      final itemRows = await db.query('return_items', where: 'return_order_id = ?', whereArgs: [ro.id]);
-      ro.items = itemRows.map((e) => ReturnItemModel.fromMap(e)).toList();
-      list.add(ro);
+      list.add(await _hydrateReturnOrder(db, m));
     }
     return list;
   }
 
-  // ================= RETURNS (RETUR BARANG) =================
+  Future<ReturnOrderModel?> getReturnOrderById(int returnOrderId) async {
+    final db = await database;
+    final res = await db.query('return_orders', where: 'id = ?', whereArgs: [returnOrderId], limit: 1);
+    if (res.isEmpty) return null;
+    return await _hydrateReturnOrder(db, res.first);
+  }
+
+  Future<ReturnOrderModel> _hydrateReturnOrder(DatabaseExecutor db, Map<String, dynamic> map) async {
+    final ro = ReturnOrderModel.fromMap(map);
+    final itemRows = await db.query('return_items', where: 'return_order_id = ?', whereArgs: [ro.id]);
+    ro.items = itemRows.map((e) => ReturnItemModel.fromMap(e)).toList();
+    final exRows = await db.query('return_exchange_items', where: 'return_order_id = ?', whereArgs: [ro.id]);
+    ro.exchangeItems = exRows.map((e) => ReturnExchangeItemModel.fromMap(e)).toList();
+    final stRows = await db.query('return_settlements', where: 'return_order_id = ?', whereArgs: [ro.id]);
+    ro.settlements = stRows.map((e) => ReturnSettlementModel.fromMap(e)).toList();
+    return ro;
+  }
+
+  // ================= RETURNS (RETUR BARANG & TUKAR BARANG) =================
+  /// Computes effective historical per-unit refund value for an item on [trx],
+  /// preserving item-level discounts, tiered prices, and proportional cart discounts/taxes
+  /// instead of reading current catalog prices.
+  static double effectiveUnitPriceForReturn(TransactionModel trx, TransactionItemModel item) {
+    if (item.qty <= 0) return item.unitPrice;
+    final perUnitItemNet = item.subtotal / item.qty;
+    if (trx.subtotal > 0.01 && (trx.discountTotal.abs() > 0.01 || trx.taxAmount.abs() > 0.01)) {
+      final headerRatio = trx.grandTotal / trx.subtotal;
+      return (perUnitItemNet * headerRatio).clamp(0.0, double.infinity);
+    }
+    return perUnitItemNet.clamp(0.0, double.infinity);
+  }
+
   Future<Map<String, double>> getReturnedQuantitiesForTransaction(int trxId) async {
     final db = await database;
     final rows = await db.rawQuery('''
       SELECT ri.product_id, ri.unit_name, SUM(ri.return_qty) as returned_qty
       FROM return_items ri
       JOIN return_orders ro ON ri.return_order_id = ro.id
-      WHERE ro.transaction_id = ?
+      WHERE ro.transaction_id = ? AND COALESCE(ro.status, 'completed') != 'voided'
       GROUP BY ri.product_id, ri.unit_name
     ''', [trxId]);
 
@@ -1615,9 +2067,319 @@ class DatabaseHelper {
     return map;
   }
 
+  Future<bool> _isRegisteredCustomerTxn(Transaction txn, int? customerId) async {
+    if (customerId == null) return false;
+    final rows = await txn.query('customers', where: 'id = ?', whereArgs: [customerId], limit: 1);
+    if (rows.isEmpty) return false;
+    final name = (rows.first['name'] ?? '').toString().trim().toLowerCase();
+    return name.isNotEmpty && name != 'pelanggan umum';
+  }
+
+  Future<void> _ensureOpenShiftTxn(Transaction txn, int? shiftId) async {
+    if (shiftId == null) {
+      throw StateError('Shift kasir harus terbuka untuk memproses mutasi uang tunai laci.');
+    }
+    final shiftRows = await txn.query('shifts', where: 'id = ?', whereArgs: [shiftId], limit: 1);
+    if (shiftRows.isEmpty || ShiftModel.fromMap(shiftRows.first).status != 'open') {
+      throw StateError('Shift kasir tidak valid atau sudah ditutup.');
+    }
+  }
+
+  Future<int> _insertCashFlowInTxn(
+    Transaction txn, {
+    int? shiftId,
+    required String type,
+    required String category,
+    required double amount,
+    required String paymentMethod,
+    required String accountName,
+    required String sourceType,
+    required String sourceId,
+    required String note,
+    required String cashierName,
+  }) async {
+    return await txn.insert('cash_flows', {
+      'shift_id': shiftId,
+      'type': type,
+      'category': category,
+      'amount': amount,
+      'payment_method': paymentMethod,
+      'account_name': accountName,
+      'source_type': sourceType,
+      'source_id': sourceId,
+      'is_internal_transfer': 0,
+      'note': note,
+      'date': DateTime.now().toIso8601String(),
+      'cashier_name': cashierName,
+    });
+  }
+
+  Future<void> _settleOutflowTxn(
+    Transaction txn, {
+    required int retId,
+    required ReturnOrderModel ret,
+    required String method,
+    required double amount,
+    required int? shiftId,
+    required int? resolvedCustomerId,
+    required String resolvedCustomerName,
+    String? excessFallbackMethod,
+    String labelPrefix = 'Retur',
+  }) async {
+    if (amount <= 0.001) return;
+    final nowIso = DateTime.now().toIso8601String();
+
+    switch (method) {
+      case RefundMethods.tunai:
+        await _ensureSufficientShiftCash(txn, shiftId, amount);
+        final cfId = await _insertCashFlowInTxn(
+          txn,
+          shiftId: shiftId,
+          type: 'out',
+          category: '$labelPrefix Penjualan',
+          amount: amount,
+          paymentMethod: 'tunai',
+          accountName: 'Laci Kasir',
+          sourceType: 'retur',
+          sourceId: ret.returnNumber,
+          note: '$labelPrefix Nota #${ret.invoiceNumber} (${ret.returnNumber})',
+          cashierName: ret.cashierName,
+        );
+        if (shiftId != null) {
+          await txn.rawUpdate(
+            'UPDATE shifts SET total_return_cash = total_return_cash + ? WHERE id = ?',
+            [amount, shiftId],
+          );
+        }
+        await txn.insert('return_settlements', {
+          'return_order_id': retId,
+          'settlement_type': 'refund_tunai',
+          'direction': 'out_to_customer',
+          'method': RefundMethods.tunai,
+          'amount': amount,
+          'account_name': 'Laci Kasir',
+          'shift_id': shiftId,
+          'customer_id': resolvedCustomerId,
+          'cash_flow_id': cfId,
+          'note': '$labelPrefix tunai dari laci kasir',
+          'created_at': nowIso,
+        });
+        break;
+
+      case RefundMethods.transfer:
+        final bankAccount = ret.transferAccount.trim().isNotEmpty ? ret.transferAccount.trim() : 'Rekening Bank';
+        final cfId = await _insertCashFlowInTxn(
+          txn,
+          shiftId: null,
+          type: 'out',
+          category: '$labelPrefix Transfer',
+          amount: amount,
+          paymentMethod: 'transfer',
+          accountName: bankAccount,
+          sourceType: 'retur',
+          sourceId: ret.returnNumber,
+          note: '$labelPrefix transfer #${ret.invoiceNumber} (${ret.returnNumber}) Ref: ${ret.transferReference.isEmpty ? "-" : ret.transferReference}',
+          cashierName: ret.cashierName,
+        );
+        await txn.insert('return_settlements', {
+          'return_order_id': retId,
+          'settlement_type': 'refund_transfer',
+          'direction': 'out_to_customer',
+          'method': RefundMethods.transfer,
+          'amount': amount,
+          'account_name': bankAccount,
+          'reference_number': ret.transferReference.trim(),
+          'customer_id': resolvedCustomerId,
+          'cash_flow_id': cfId,
+          'note': '$labelPrefix transfer bank ke $resolvedCustomerName',
+          'created_at': nowIso,
+        });
+        break;
+
+      case RefundMethods.qrisManual:
+        final ewalletAcc = ret.transferAccount.trim().isNotEmpty ? ret.transferAccount.trim() : 'QRIS / E-Wallet';
+        final cfId = await _insertCashFlowInTxn(
+          txn,
+          shiftId: null,
+          type: 'out',
+          category: '$labelPrefix QRIS/E-Wallet',
+          amount: amount,
+          paymentMethod: 'qris',
+          accountName: ewalletAcc,
+          sourceType: 'retur',
+          sourceId: ret.returnNumber,
+          note: '$labelPrefix QRIS/E-Wallet #${ret.invoiceNumber} (${ret.returnNumber})',
+          cashierName: ret.cashierName,
+        );
+        await txn.insert('return_settlements', {
+          'return_order_id': retId,
+          'settlement_type': 'refund_qris',
+          'direction': 'out_to_customer',
+          'method': RefundMethods.qrisManual,
+          'amount': amount,
+          'account_name': ewalletAcc,
+          'reference_number': ret.transferReference.trim(),
+          'customer_id': resolvedCustomerId,
+          'cash_flow_id': cfId,
+          'note': '$labelPrefix manual via $ewalletAcc',
+          'created_at': nowIso,
+        });
+        break;
+
+      case RefundMethods.saldoKredit:
+        final isRegistered = await _isRegisteredCustomerTxn(txn, resolvedCustomerId);
+        if (!isRegistered || resolvedCustomerId == null) {
+          throw StateError(
+            'Saldo Kredit Retur hanya berlaku untuk pelanggan terdaftar (bukan Pelanggan Umum). Pilih pelanggan terdaftar terlebih dahulu.',
+          );
+        }
+        await _appendCustomerCreditLedgerTxn(
+          txn,
+          customerId: resolvedCustomerId,
+          customerName: resolvedCustomerName,
+          entryType: CustomerCreditTypes.creditIssued,
+          amount: amount,
+          referenceType: 'return_order',
+          referenceId: retId,
+          referenceNumber: ret.returnNumber,
+          userId: ret.cashierId,
+          userName: ret.cashierName,
+          note: 'Kredit dari Retur #${ret.returnNumber} (Nota #${ret.invoiceNumber})',
+        );
+        await txn.insert('return_settlements', {
+          'return_order_id': retId,
+          'settlement_type': 'saldo_kredit',
+          'direction': 'credit_issued',
+          'method': RefundMethods.saldoKredit,
+          'amount': amount,
+          'account_name': 'Saldo Kredit Pelanggan',
+          'customer_id': resolvedCustomerId,
+          'note': 'Penambahan saldo kredit $resolvedCustomerName',
+          'created_at': nowIso,
+        });
+        break;
+
+      case RefundMethods.potongPiutang:
+        // First prioritize invoice debt, then any active debts of this customer (oldest due_date first)
+        final candidateDebts = <Map<String, dynamic>>[];
+        final invoiceDebts = await txn.query(
+          'customer_debts',
+          where: 'invoice_number = ? AND (total_debt - paid_debt) > 0.001',
+          whereArgs: [ret.invoiceNumber],
+          orderBy: 'id ASC',
+        );
+        candidateDebts.addAll(invoiceDebts);
+
+        if (resolvedCustomerId != null) {
+          final otherDebts = await txn.query(
+            'customer_debts',
+            where:
+                "(customer_id = ? OR (customer_id IS NULL AND LOWER(customer_name) = LOWER(?))) AND invoice_number != ? AND (total_debt - paid_debt) > 0.001",
+            whereArgs: [resolvedCustomerId, resolvedCustomerName, ret.invoiceNumber],
+            orderBy: 'due_date ASC, id ASC',
+          );
+          candidateDebts.addAll(otherDebts);
+        }
+
+        double remainingToOffset = amount;
+        double totalOffsetApplied = 0.0;
+        for (final row in candidateDebts) {
+          if (remainingToOffset <= 0.001) break;
+          final d = CustomerDebtModel.fromMap(row);
+          if (d.remainingDebt <= 0.001 || d.id == null) continue;
+          final applied = remainingToOffset.clamp(0.0, d.remainingDebt);
+          final newPaid = (d.paidDebt + applied).clamp(0.0, d.totalDebt);
+          await txn.update(
+            'customer_debts',
+            {
+              'paid_debt': newPaid,
+              'last_payment_date': nowIso,
+              'note': '${d.note} [Potong Retur #${ret.returnNumber}]'.trim(),
+            },
+            where: 'id = ?',
+            whereArgs: [d.id],
+          );
+          await txn.insert('customer_debt_payments', {
+            'debt_id': d.id,
+            'customer_id': d.customerId ?? resolvedCustomerId,
+            'amount': applied,
+            'payment_method': 'retur',
+            'shift_id': shiftId,
+            'cashier_name': ret.cashierName,
+            'date': nowIso,
+            'note': 'Potong piutang dari Retur #${ret.returnNumber} (Nota #${d.invoiceNumber})',
+          });
+          await txn.insert('return_settlements', {
+            'return_order_id': retId,
+            'settlement_type': 'potong_piutang',
+            'direction': 'debt_offset',
+            'method': RefundMethods.potongPiutang,
+            'amount': applied,
+            'account_name': 'Kasbon #${d.invoiceNumber}',
+            'reference_number': d.invoiceNumber,
+            'customer_id': d.customerId ?? resolvedCustomerId,
+            'note': 'Pemotongan piutang Nota #${d.invoiceNumber}',
+            'created_at': nowIso,
+          });
+          remainingToOffset -= applied;
+          totalOffsetApplied += applied;
+        }
+
+        if (totalOffsetApplied <= 0.001) {
+          throw StateError(
+            'Pelanggan tidak memiliki sisa piutang kasbon aktif untuk dipotong. Gunakan metode Tunai, Transfer, atau Saldo Kredit.',
+          );
+        }
+
+        if (remainingToOffset > 0.01) {
+          final isRegCust = await _isRegisteredCustomerTxn(txn, resolvedCustomerId);
+          final chosenExcess = (excessFallbackMethod != null &&
+                  excessFallbackMethod.isNotEmpty &&
+                  excessFallbackMethod != RefundMethods.potongPiutang &&
+                  excessFallbackMethod != RefundMethods.tukarBarang)
+              ? excessFallbackMethod
+              : (isRegCust ? RefundMethods.saldoKredit : RefundMethods.tunai);
+          await _settleOutflowTxn(
+            txn,
+            retId: retId,
+            ret: ret,
+            method: chosenExcess,
+            amount: remainingToOffset,
+            shiftId: shiftId,
+            resolvedCustomerId: resolvedCustomerId,
+            resolvedCustomerName: resolvedCustomerName,
+            labelPrefix: 'Kelebihan Retur Kasbon',
+          );
+        }
+        break;
+
+      default:
+        throw StateError('Metode pengembalian dana "$method" tidak dikenali.');
+    }
+  }
+
   Future<int> insertReturnOrder(ReturnOrderModel ret, {int? shiftId}) async {
     final db = await database;
     return await db.transaction((txn) async {
+      // 0. Idempotency protection: never double-execute retried requests
+      final idem = ret.idempotencyKey?.trim();
+      if (idem != null && idem.isNotEmpty) {
+        final existingIdem = await txn.query(
+          'return_orders',
+          columns: ['id'],
+          where: 'idempotency_key = ?',
+          whereArgs: [idem],
+          limit: 1,
+        );
+        if (existingIdem.isNotEmpty) {
+          return existingIdem.first['id'] as int;
+        }
+      }
+
+      if (ret.items.isEmpty) {
+        throw StateError('Minimal 1 barang harus dipilih untuk diproses retur.');
+      }
+
       final trxRows = await txn.query('transactions', where: 'id = ?', whereArgs: [ret.transactionId], limit: 1);
       if (trxRows.isEmpty) {
         throw StateError('Transaksi asal tidak ditemukan.');
@@ -1627,23 +2389,38 @@ class DatabaseHelper {
         throw StateError('Transaksi yang sudah dibatalkan (VOID) tidak dapat diretur.');
       }
 
-      // Compute prior returns inside transaction to prevent concurrent/double over-return
+      if (!RefundMethods.all.contains(ret.refundMethod)) {
+        throw StateError('Metode penyelesaian retur "${ret.refundMethod}" tidak valid.');
+      }
+      if (ret.refundMethod == RefundMethods.tukarBarang && ret.exchangeItems.isEmpty) {
+        throw StateError('Metode Tukar Barang wajib memilih minimal 1 produk pengganti agar stok keluar tercatat.');
+      }
+
+      final int? resolvedCustomerId = ret.customerId ?? origTrx.customerId;
+      final String resolvedCustomerName =
+          ret.customerName.trim().isNotEmpty && ret.customerName.trim().toLowerCase() != 'pelanggan umum'
+              ? ret.customerName.trim()
+              : (origTrx.customerName.trim().isNotEmpty ? origTrx.customerName.trim() : 'Pelanggan Umum');
+
+      // Validate return items against original purchased quantities & prior non-voided returns
       final origItems = await txn.query(
         'transaction_items',
         where: 'transaction_id = ?',
         whereArgs: [ret.transactionId],
       );
       final purchasedMap = <String, double>{};
+      final origMetaByKey = <String, Map<String, dynamic>>{};
       for (final oi in origItems) {
         final key = '${oi['product_id']}_${oi['unit_name']}';
         purchasedMap[key] = (purchasedMap[key] ?? 0.0) + ((oi['qty'] as num).toDouble());
+        origMetaByKey.putIfAbsent(key, () => oi);
       }
 
       final priorRetRows = await txn.rawQuery('''
         SELECT ri.product_id, ri.unit_name, SUM(ri.return_qty) as total_ret
         FROM return_items ri
         JOIN return_orders ro ON ri.return_order_id = ro.id
-        WHERE ro.transaction_id = ?
+        WHERE ro.transaction_id = ? AND COALESCE(ro.status, 'completed') != 'voided'
         GROUP BY ri.product_id, ri.unit_name
       ''', [ret.transactionId]);
       final retMap = <String, double>{
@@ -1651,9 +2428,14 @@ class DatabaseHelper {
           '${r['product_id']}_${r['unit_name']}': (r['total_ret'] as num?)?.toDouble() ?? 0.0,
       };
 
+      final normalizedItems = <ReturnItemModel>[];
+      double computedReturnSubtotal = 0.0;
       for (final item in ret.items) {
         final key = '${item.productId}_${item.unitName}';
         final purchased = purchasedMap[key] ?? 0.0;
+        if (purchased <= 0.0001) {
+          throw StateError('Produk "${item.productName}" tidak terdaftar pada transaksi #${origTrx.invoiceNumber}.');
+        }
         final alreadyRet = retMap[key] ?? 0.0;
         final remainingAllowed = purchased - alreadyRet;
         if (item.returnQty <= 0 || item.returnQty > remainingAllowed + 0.0001) {
@@ -1661,40 +2443,196 @@ class DatabaseHelper {
             'Jumlah retur "${item.productName}" (${item.returnQty}) melebihi sisa yang dapat diretur (${remainingAllowed.toStringAsFixed(1)} ${item.unitName}).',
           );
         }
+
+        final origItem = origMetaByKey[key]!;
+        final prodRows = await txn.query(
+          'products',
+          columns: ['code', 'cost_price', 'track_stock', 'is_service'],
+          where: 'id = ?',
+          whereArgs: [item.productId],
+          limit: 1,
+        );
+        final prodMeta = prodRows.isNotEmpty ? prodRows.first : <String, dynamic>{};
+        final tracksStock = prodRows.isEmpty ||
+            ((prodMeta['track_stock'] ?? 1) == 1 && (prodMeta['is_service'] ?? 0) != 1);
+
+        final effectiveTreatment = !tracksStock
+            ? StockTreatments.noStockChange
+            : (StockTreatments.all.contains(item.stockTreatment)
+                ? item.stockTreatment
+                : StockTreatments.defaultForCondition(item.condition, tracksStock: tracksStock));
+
+        final baseCost = item.costPrice > 0
+            ? item.costPrice
+            : ((origItem['cost_price'] as num?)?.toDouble() ??
+                (prodMeta['cost_price'] as num?)?.toDouble() ??
+                0.0);
+        final sku = item.sku.isNotEmpty
+            ? item.sku
+            : (origItem['product_code'] ?? prodMeta['code'] ?? '').toString();
+        final lineSubtotal = item.subtotal > 0 ? item.subtotal : (item.returnQty * item.refundPrice);
+
+        normalizedItems.add(
+          ReturnItemModel(
+            productId: item.productId,
+            sku: sku,
+            productName: item.productName,
+            unitName: item.unitName,
+            conversionFactor: item.conversionFactor,
+            purchasedQty: item.purchasedQty > 0 ? item.purchasedQty : purchased,
+            previouslyReturnedQty: alreadyRet,
+            returnQty: item.returnQty,
+            refundPrice: item.refundPrice,
+            costPrice: baseCost,
+            subtotal: lineSubtotal,
+            condition: item.condition,
+            stockTreatment: effectiveTreatment,
+          ),
+        );
         retMap[key] = alreadyRet + item.returnQty;
+        computedReturnSubtotal += lineSubtotal;
       }
 
-      if (ret.refundMethod == 'tunai' && ret.totalRefund > 0) {
-        await _ensureSufficientShiftCash(txn, shiftId, ret.totalRefund);
-      }
+      final double effectiveReturnTotal = ret.totalRefund > 0 ? ret.totalRefund : computedReturnSubtotal;
 
-      final retId = await txn.insert('return_orders', ret.toMap());
-
-      for (final item in ret.items) {
-        await txn.insert('return_items', {
-          'return_order_id': retId,
-          'product_id': item.productId,
-          'product_name': item.productName,
-          'unit_name': item.unitName,
-          'conversion_factor': item.conversionFactor,
-          'return_qty': item.returnQty,
-          'refund_price': item.refundPrice,
-          'subtotal': item.subtotal,
-          'condition': item.condition,
-        });
-
-        if (item.condition == 'baik') {
-          final prodRows = await txn.query('products', columns: ['track_stock'], where: 'id = ?', whereArgs: [item.productId], limit: 1);
-          final tracksStock = prodRows.isEmpty || (prodRows.first['track_stock'] ?? 1) == 1;
-          if (tracksStock) {
-            await txn.rawUpdate(
-              'UPDATE products SET stock = stock + ? WHERE id = ?',
-              [item.baseStockQty, item.productId],
-            );
+      // Normalize & pre-validate exchange items if tukar_barang
+      final normalizedExchangeItems = <ReturnExchangeItemModel>[];
+      double computedExchangeTotal = 0.0;
+      if (ret.refundMethod == RefundMethods.tukarBarang) {
+        for (final ex in ret.exchangeItems) {
+          if (ex.qty <= 0) {
+            throw StateError('Qty barang pengganti "${ex.productName}" harus lebih dari 0.');
           }
+          final pRows = await txn.query('products', where: 'id = ?', whereArgs: [ex.productId], limit: 1);
+          if (pRows.isEmpty) {
+            throw StateError('Produk pengganti "${ex.productName}" tidak ditemukan.');
+          }
+          final pm = pRows.first;
+          final exSku = ex.sku.isNotEmpty ? ex.sku : (pm['code'] ?? '').toString();
+          final exCost = ex.costPrice > 0 ? ex.costPrice : ((pm['cost_price'] as num?)?.toDouble() ?? 0.0);
+          final exSubtotal = ex.subtotal > 0 ? ex.subtotal : (ex.qty * ex.unitPrice);
+          normalizedExchangeItems.add(
+            ReturnExchangeItemModel(
+              productId: ex.productId,
+              sku: exSku,
+              productName: ex.productName.isNotEmpty ? ex.productName : (pm['name'] ?? '').toString(),
+              unitName: ex.unitName,
+              conversionFactor: ex.conversionFactor,
+              qty: ex.qty,
+              unitPrice: ex.unitPrice,
+              costPrice: exCost,
+              subtotal: exSubtotal,
+            ),
+          );
+          computedExchangeTotal += exSubtotal;
         }
       }
 
+      final double effectiveExchangeTotal =
+          ret.refundMethod == RefundMethods.tukarBarang ? computedExchangeTotal : 0.0;
+      final double differenceAmount =
+          ret.refundMethod == RefundMethods.tukarBarang ? (effectiveExchangeTotal - effectiveReturnTotal) : 0.0;
+
+      // Insert parent return_orders row
+      final insertMap = ReturnOrderModel(
+        returnNumber: ret.returnNumber,
+        transactionId: ret.transactionId,
+        invoiceNumber: ret.invoiceNumber,
+        date: ret.date,
+        cashierId: ret.cashierId,
+        cashierName: ret.cashierName,
+        customerId: resolvedCustomerId,
+        customerName: resolvedCustomerName,
+        totalRefund: effectiveReturnTotal,
+        refundMethod: ret.refundMethod,
+        reason: ret.reason,
+        note: ret.note,
+        status: 'completed',
+        exchangeTotal: effectiveExchangeTotal,
+        differenceAmount: differenceAmount,
+        differencePaymentMethod: ret.differencePaymentMethod,
+        idempotencyKey: idem,
+      ).toMap();
+      final retId = await txn.insert('return_orders', insertMap);
+
+      // Process returned item records & inventory movements FIRST (so same-SKU restock precedes exchange_out cleanly)
+      for (final item in normalizedItems) {
+        await txn.insert('return_items', {
+          ...item.toMap(),
+          'return_order_id': retId,
+        });
+
+        late final String movementType;
+        late final String bucket;
+        late final double qtyDelta;
+        switch (item.stockTreatment) {
+          case StockTreatments.restockSellable:
+            movementType = MovementTypes.returnIn;
+            bucket = 'sellable';
+            qtyDelta = item.baseStockQty;
+            break;
+          case StockTreatments.quarantine:
+            movementType = MovementTypes.quarantineIn;
+            bucket = 'quarantine';
+            qtyDelta = item.baseStockQty;
+            break;
+          case StockTreatments.damaged:
+            movementType = MovementTypes.damagedIn;
+            bucket = 'damaged';
+            qtyDelta = item.baseStockQty;
+            break;
+          case StockTreatments.noStockChange:
+          default:
+            movementType = MovementTypes.noStockChange;
+            bucket = 'none';
+            qtyDelta = 0.0;
+            break;
+        }
+
+        await _recordStockMovement(
+          txn,
+          productId: item.productId,
+          movementType: movementType,
+          bucket: bucket,
+          qtyDelta: qtyDelta,
+          referenceType: 'return_order',
+          referenceId: retId,
+          referenceNumber: ret.returnNumber,
+          userId: ret.cashierId,
+          userName: ret.cashierName,
+          note:
+              'Retur #${ret.returnNumber} (Nota #${ret.invoiceNumber}) [${ReturnConditions.label(item.condition)} -> ${StockTreatments.label(item.stockTreatment)}]',
+          enforceNonNegative: false,
+          recordWhenUntracked: true,
+        );
+      }
+
+      // Process exchange items OUT + record exchange_out ledger
+      if (ret.refundMethod == RefundMethods.tukarBarang) {
+        for (final ex in normalizedExchangeItems) {
+          await txn.insert('return_exchange_items', {
+            ...ex.toMap(),
+            'return_order_id': retId,
+          });
+          await _recordStockMovement(
+            txn,
+            productId: ex.productId,
+            movementType: MovementTypes.exchangeOut,
+            bucket: 'sellable',
+            qtyDelta: -ex.baseStockQty,
+            referenceType: 'return_order',
+            referenceId: retId,
+            referenceNumber: ret.returnNumber,
+            userId: ret.cashierId,
+            userName: ret.cashierName,
+            note: 'Tukar Barang Keluar Retur #${ret.returnNumber} (${ex.qty} ${ex.unitName})',
+            enforceNonNegative: true,
+            recordWhenUntracked: true,
+          );
+        }
+      }
+
+      // Update parent transaction status ('returned' vs 'partial_return')
       bool allReturned = origItems.isNotEmpty;
       for (final entry in purchasedMap.entries) {
         final returned = retMap[entry.key] ?? 0.0;
@@ -1703,7 +2641,6 @@ class DatabaseHelper {
           break;
         }
       }
-
       await txn.update(
         'transactions',
         {'status': allReturned ? 'returned' : 'partial_return'},
@@ -1711,66 +2648,633 @@ class DatabaseHelper {
         whereArgs: [ret.transactionId],
       );
 
-      // Sync refund method
-      if (ret.refundMethod == 'tunai') {
-        await txn.insert('cash_flows', {
-          'shift_id': shiftId,
-          'type': 'out',
-          'category': 'Retur Penjualan',
-          'amount': ret.totalRefund,
-          'payment_method': 'tunai',
-          'account_name': 'Laci Kasir',
-          'source_type': 'retur',
-          'source_id': ret.returnNumber,
-          'is_internal_transfer': 0,
-          'note': 'Retur Nota #${ret.invoiceNumber}',
-          'date': DateTime.now().toIso8601String(),
-          'cashier_name': ret.cashierName,
-        });
-        if (shiftId != null) {
-          await txn.rawUpdate(
-            'UPDATE shifts SET total_return_cash = total_return_cash + ? WHERE id = ?',
-            [ret.totalRefund, shiftId],
-          );
-        }
-      } else if (ret.refundMethod == 'potong_piutang') {
-        final debts = await txn.query(
-          'customer_debts',
-          where: 'invoice_number = ?',
-          whereArgs: [ret.invoiceNumber],
-          limit: 1,
-        );
-        if (debts.isNotEmpty) {
-          final d = CustomerDebtModel.fromMap(debts.first);
-          final applied = ret.totalRefund.clamp(0.0, d.remainingDebt);
-          final newPaid = (d.paidDebt + applied).clamp(0.0, d.totalDebt);
-          await txn.update(
-            'customer_debts',
-            {
-              'paid_debt': newPaid,
-              'last_payment_date': DateTime.now().toIso8601String(),
-              'note': '${d.note} [Dipotong Retur #${ret.returnNumber}]'.trim(),
-            },
-            where: 'id = ?',
-            whereArgs: [d.id],
-          );
-          if (applied > 0) {
-            await txn.insert('customer_debt_payments', {
-              'debt_id': d.id,
-              'customer_id': d.customerId,
-              'amount': applied,
-              'payment_method': 'retur',
+      // Financial settlement
+      final nowIso = DateTime.now().toIso8601String();
+      if (ret.refundMethod == RefundMethods.tukarBarang) {
+        if (differenceAmount.abs() <= 0.01) {
+          await txn.insert('return_settlements', {
+            'return_order_id': retId,
+            'settlement_type': 'tukar_sama',
+            'direction': 'none',
+            'method': RefundMethods.tukarBarang,
+            'amount': 0.0,
+            'customer_id': resolvedCustomerId,
+            'note': 'Tukar barang nilai setara (Rp ${effectiveReturnTotal.toInt()})',
+            'created_at': nowIso,
+          });
+        } else if (differenceAmount > 0.01) {
+          // Pelanggan bayar selisih tambahan (upgrade)
+          final payDiffMethod =
+              ret.differencePaymentMethod.trim().isNotEmpty ? ret.differencePaymentMethod.trim() : RefundMethods.tunai;
+          if (payDiffMethod == RefundMethods.tunai) {
+            await _ensureOpenShiftTxn(txn, shiftId);
+            final cfId = await _insertCashFlowInTxn(
+              txn,
+              shiftId: shiftId,
+              type: 'in',
+              category: 'Selisih Tukar Barang',
+              amount: differenceAmount,
+              paymentMethod: 'tunai',
+              accountName: 'Laci Kasir',
+              sourceType: 'retur',
+              sourceId: ret.returnNumber,
+              note: 'Tambahan bayar tukar barang #${ret.returnNumber} (Nota #${ret.invoiceNumber})',
+              cashierName: ret.cashierName,
+            );
+            await txn.rawUpdate(
+              'UPDATE shifts SET total_cash_in = total_cash_in + ? WHERE id = ?',
+              [differenceAmount, shiftId],
+            );
+            await txn.insert('return_settlements', {
+              'return_order_id': retId,
+              'settlement_type': 'tukar_bayar_selisih',
+              'direction': 'in_from_customer',
+              'method': RefundMethods.tunai,
+              'amount': differenceAmount,
+              'account_name': 'Laci Kasir',
               'shift_id': shiftId,
-              'cashier_name': ret.cashierName,
-              'date': DateTime.now().toIso8601String(),
-              'note': 'Potong piutang dari Retur #${ret.returnNumber}',
+              'customer_id': resolvedCustomerId,
+              'cash_flow_id': cfId,
+              'note': 'Pelanggan bayar selisih upgrade secara tunai',
+              'created_at': nowIso,
             });
+          } else if (payDiffMethod == RefundMethods.transfer ||
+              payDiffMethod == 'qris' ||
+              payDiffMethod == RefundMethods.qrisManual) {
+            final pm = payDiffMethod == RefundMethods.transfer ? 'transfer' : 'qris';
+            final acc = ret.transferAccount.trim().isNotEmpty
+                ? ret.transferAccount.trim()
+                : (pm == 'transfer' ? 'Rekening Bank' : 'QRIS');
+            final cfId = await _insertCashFlowInTxn(
+              txn,
+              shiftId: null,
+              type: 'in',
+              category: 'Selisih Tukar Barang ($pm)',
+              amount: differenceAmount,
+              paymentMethod: pm,
+              accountName: acc,
+              sourceType: 'retur',
+              sourceId: ret.returnNumber,
+              note: 'Tambahan bayar tukar barang #${ret.returnNumber} via $acc',
+              cashierName: ret.cashierName,
+            );
+            await txn.insert('return_settlements', {
+              'return_order_id': retId,
+              'settlement_type': 'tukar_bayar_selisih',
+              'direction': 'in_from_customer',
+              'method': payDiffMethod,
+              'amount': differenceAmount,
+              'account_name': acc,
+              'reference_number': ret.transferReference.trim(),
+              'customer_id': resolvedCustomerId,
+              'cash_flow_id': cfId,
+              'note': 'Pelanggan bayar selisih upgrade via $acc',
+              'created_at': nowIso,
+            });
+          } else if (payDiffMethod == RefundMethods.saldoKredit) {
+            final isReg = await _isRegisteredCustomerTxn(txn, resolvedCustomerId);
+            if (!isReg || resolvedCustomerId == null) {
+              throw StateError('Pelanggan harus terdaftar untuk membayar selisih tukar barang dengan Saldo Kredit.');
+            }
+            await _appendCustomerCreditLedgerTxn(
+              txn,
+              customerId: resolvedCustomerId,
+              customerName: resolvedCustomerName,
+              entryType: CustomerCreditTypes.creditRedeemed,
+              amount: differenceAmount,
+              referenceType: 'return_order',
+              referenceId: retId,
+              referenceNumber: ret.returnNumber,
+              userId: ret.cashierId,
+              userName: ret.cashierName,
+              note: 'Potong saldo kredit selisih tukar barang #${ret.returnNumber}',
+            );
+            await txn.insert('return_settlements', {
+              'return_order_id': retId,
+              'settlement_type': 'tukar_bayar_selisih',
+              'direction': 'credit_used',
+              'method': RefundMethods.saldoKredit,
+              'amount': differenceAmount,
+              'account_name': 'Saldo Kredit Pelanggan',
+              'customer_id': resolvedCustomerId,
+              'note': 'Pembayaran selisih memakai saldo kredit pelanggan',
+              'created_at': nowIso,
+            });
+          } else {
+            throw StateError('Metode bayar selisih tukar barang "$payDiffMethod" tidak didukung.');
           }
+        } else {
+          // Nilai barang pengganti lebih murah -> kembalikan selisih ke pelanggan
+          final refundDiff = -differenceAmount;
+          final diffOutMethod =
+              ret.differencePaymentMethod.trim().isNotEmpty ? ret.differencePaymentMethod.trim() : RefundMethods.tunai;
+          await _settleOutflowTxn(
+            txn,
+            retId: retId,
+            ret: ret,
+            method: diffOutMethod,
+            amount: refundDiff,
+            shiftId: shiftId,
+            resolvedCustomerId: resolvedCustomerId,
+            resolvedCustomerName: resolvedCustomerName,
+            labelPrefix: 'Selisih Tukar Lebih Murah',
+          );
         }
+      } else {
+        await _settleOutflowTxn(
+          txn,
+          retId: retId,
+          ret: ret,
+          method: ret.refundMethod,
+          amount: effectiveReturnTotal,
+          shiftId: shiftId,
+          resolvedCustomerId: resolvedCustomerId,
+          resolvedCustomerName: resolvedCustomerName,
+          excessFallbackMethod: ret.differencePaymentMethod,
+        );
       }
 
       return retId;
     });
+  }
+
+  /// Atomically reverses a completed return order: restores/pulls back inventory buckets,
+  /// reverses exchange items, customer credit, debt offsets, and cash flows, and updates transaction status.
+  Future<void> voidReturnOrder({
+    required int returnOrderId,
+    required int userId,
+    required String userName,
+    required String reason,
+    int? shiftId,
+  }) async {
+    if (reason.trim().isEmpty) {
+      throw StateError('Alasan pembatalan retur wajib diisi.');
+    }
+    final db = await database;
+    await db.transaction((txn) async {
+      final roRows = await txn.query('return_orders', where: 'id = ?', whereArgs: [returnOrderId], limit: 1);
+      if (roRows.isEmpty) {
+        throw StateError('Data retur tidak ditemukan.');
+      }
+      final ro = await _hydrateReturnOrder(txn, roRows.first);
+      if (ro.isVoided) {
+        throw StateError('Retur #${ro.returnNumber} sudah dibatalkan sebelumnya.');
+      }
+
+      // 1. Reverse returned items stock effect
+      for (final item in ro.items) {
+        late final String bucket;
+        late final double reverseDelta;
+        switch (item.stockTreatment) {
+          case StockTreatments.restockSellable:
+            bucket = 'sellable';
+            reverseDelta = -item.baseStockQty;
+            break;
+          case StockTreatments.quarantine:
+            bucket = 'quarantine';
+            reverseDelta = -item.baseStockQty;
+            break;
+          case StockTreatments.damaged:
+            bucket = 'damaged';
+            reverseDelta = -item.baseStockQty;
+            break;
+          case StockTreatments.noStockChange:
+          default:
+            bucket = 'none';
+            reverseDelta = 0.0;
+            break;
+        }
+        await _recordStockMovement(
+          txn,
+          productId: item.productId,
+          movementType: MovementTypes.returnVoidReverse,
+          bucket: bucket,
+          qtyDelta: reverseDelta,
+          referenceType: 'return_void',
+          referenceId: ro.id,
+          referenceNumber: ro.returnNumber,
+          userId: userId,
+          userName: userName,
+          note: 'Pembatalan Retur #${ro.returnNumber} ($reason)',
+          enforceNonNegative: true,
+          recordWhenUntracked: true,
+        );
+      }
+
+      // 2. Restore exchange items back to sellable stock
+      for (final ex in ro.exchangeItems) {
+        await _recordStockMovement(
+          txn,
+          productId: ex.productId,
+          movementType: MovementTypes.returnVoidReverse,
+          bucket: 'sellable',
+          qtyDelta: ex.baseStockQty,
+          referenceType: 'return_void',
+          referenceId: ro.id,
+          referenceNumber: ro.returnNumber,
+          userId: userId,
+          userName: userName,
+          note: 'Pengembalian stok pengganti akibat Void Retur #${ro.returnNumber}',
+          enforceNonNegative: false,
+          recordWhenUntracked: true,
+        );
+      }
+
+      // 3. Reverse financial settlements
+      final nowIso = DateTime.now().toIso8601String();
+      for (final st in ro.settlements) {
+        if (st.amount <= 0.001) continue;
+        if (st.direction == 'credit_issued') {
+          final cid = st.customerId ?? ro.customerId;
+          if (cid != null) {
+            await _appendCustomerCreditLedgerTxn(
+              txn,
+              customerId: cid,
+              customerName: ro.customerName,
+              entryType: CustomerCreditTypes.creditReversed,
+              amount: st.amount,
+              referenceType: 'return_void',
+              referenceId: ro.id,
+              referenceNumber: ro.returnNumber,
+              userId: userId,
+              userName: userName,
+              note: 'Pembatalan kredit hasil Void Retur #${ro.returnNumber}',
+            );
+          }
+        } else if (st.direction == 'credit_used') {
+          final cid = st.customerId ?? ro.customerId;
+          if (cid != null) {
+            await _appendCustomerCreditLedgerTxn(
+              txn,
+              customerId: cid,
+              customerName: ro.customerName,
+              entryType: CustomerCreditTypes.creditIssued,
+              amount: st.amount,
+              referenceType: 'return_void',
+              referenceId: ro.id,
+              referenceNumber: ro.returnNumber,
+              userId: userId,
+              userName: userName,
+              note: 'Pemulihan saldo kredit akibat Void Retur #${ro.returnNumber}',
+            );
+          }
+        } else if (st.direction == 'debt_offset') {
+          final debtInv = st.referenceNumber.isNotEmpty ? st.referenceNumber : ro.invoiceNumber;
+          final dRows = await txn.query('customer_debts', where: 'invoice_number = ?', whereArgs: [debtInv], limit: 1);
+          if (dRows.isNotEmpty) {
+            final d = CustomerDebtModel.fromMap(dRows.first);
+            final newPaid = (d.paidDebt - st.amount).clamp(0.0, d.totalDebt);
+            await txn.update(
+              'customer_debts',
+              {
+                'paid_debt': newPaid,
+                'note': '${d.note} [Void Retur #${ro.returnNumber}]'.trim(),
+              },
+              where: 'id = ?',
+              whereArgs: [d.id],
+            );
+            await txn.insert('customer_debt_payments', {
+              'debt_id': d.id,
+              'customer_id': d.customerId,
+              'amount': -st.amount,
+              'payment_method': 'retur_void',
+              'shift_id': shiftId ?? st.shiftId,
+              'cashier_name': userName,
+              'date': nowIso,
+              'note': 'Pembatalan potong piutang dari Void Retur #${ro.returnNumber}',
+            });
+          }
+        } else if (st.direction == 'out_to_customer') {
+          final targetShiftId = shiftId ?? st.shiftId;
+          if (st.method == RefundMethods.tunai) {
+            await _ensureOpenShiftTxn(txn, targetShiftId);
+            await _insertCashFlowInTxn(
+              txn,
+              shiftId: targetShiftId,
+              type: 'in',
+              category: 'Pembalikan Refund Retur Void',
+              amount: st.amount,
+              paymentMethod: 'tunai',
+              accountName: 'Laci Kasir',
+              sourceType: 'retur_void',
+              sourceId: ro.returnNumber,
+              note: 'Void Retur #${ro.returnNumber} ($reason)',
+              cashierName: userName,
+            );
+            if (targetShiftId != null) {
+              final sRows = await txn.query('shifts', where: 'id = ?', whereArgs: [targetShiftId], limit: 1);
+              if (sRows.isNotEmpty) {
+                final curRetCash = (sRows.first['total_return_cash'] as num?)?.toDouble() ?? 0.0;
+                final decRet = st.amount <= curRetCash ? st.amount : curRetCash;
+                final remIn = st.amount - decRet;
+                await txn.rawUpdate(
+                  'UPDATE shifts SET total_return_cash = total_return_cash - ?, total_cash_in = total_cash_in + ? WHERE id = ?',
+                  [decRet, remIn, targetShiftId],
+                );
+              }
+            }
+          } else {
+            final pm = st.method == RefundMethods.transfer ? 'transfer' : 'qris';
+            await _insertCashFlowInTxn(
+              txn,
+              shiftId: null,
+              type: 'in',
+              category: 'Pembalikan Refund Non-Tunai Void',
+              amount: st.amount,
+              paymentMethod: pm,
+              accountName: st.accountName.isNotEmpty ? st.accountName : (pm == 'transfer' ? 'Rekening Bank' : 'QRIS'),
+              sourceType: 'retur_void',
+              sourceId: ro.returnNumber,
+              note: 'Void Retur #${ro.returnNumber} ($reason)',
+              cashierName: userName,
+            );
+          }
+        } else if (st.direction == 'in_from_customer') {
+          final targetShiftId = shiftId ?? st.shiftId;
+          if (st.method == RefundMethods.tunai) {
+            await _ensureSufficientShiftCash(txn, targetShiftId, st.amount);
+            await _insertCashFlowInTxn(
+              txn,
+              shiftId: targetShiftId,
+              type: 'out',
+              category: 'Pembalikan Selisih Tukar Void',
+              amount: st.amount,
+              paymentMethod: 'tunai',
+              accountName: 'Laci Kasir',
+              sourceType: 'retur_void',
+              sourceId: ro.returnNumber,
+              note: 'Kembalikan selisih bayar akibat Void Retur #${ro.returnNumber} ($reason)',
+              cashierName: userName,
+            );
+            if (targetShiftId != null) {
+              await txn.rawUpdate(
+                'UPDATE shifts SET total_cash_out = total_cash_out + ? WHERE id = ?',
+                [st.amount, targetShiftId],
+              );
+            }
+          } else {
+            final pm = st.method == RefundMethods.transfer ? 'transfer' : 'qris';
+            await _insertCashFlowInTxn(
+              txn,
+              shiftId: null,
+              type: 'out',
+              category: 'Pembalikan Selisih Tukar Non-Tunai Void',
+              amount: st.amount,
+              paymentMethod: pm,
+              accountName: st.accountName.isNotEmpty ? st.accountName : (pm == 'transfer' ? 'Rekening Bank' : 'QRIS'),
+              sourceType: 'retur_void',
+              sourceId: ro.returnNumber,
+              note: 'Kembalikan selisih transfer/QRIS akibat Void Retur #${ro.returnNumber}',
+              cashierName: userName,
+            );
+          }
+        }
+      }
+
+      // 4. Mark return_order voided (immutable history kept intact)
+      await txn.update(
+        'return_orders',
+        {
+          'status': 'voided',
+          'voided_at': nowIso,
+          'voided_by': userId,
+          'voided_by_name': userName,
+          'void_reason': reason.trim(),
+        },
+        where: 'id = ?',
+        whereArgs: [returnOrderId],
+      );
+
+      // 5. Recalculate original transaction status among remaining active returns
+      final origItems = await txn.query('transaction_items', where: 'transaction_id = ?', whereArgs: [ro.transactionId]);
+      final purchasedMap = <String, double>{};
+      for (final oi in origItems) {
+        final key = '${oi['product_id']}_${oi['unit_name']}';
+        purchasedMap[key] = (purchasedMap[key] ?? 0.0) + ((oi['qty'] as num).toDouble());
+      }
+      final remRetRows = await txn.rawQuery('''
+        SELECT ri.product_id, ri.unit_name, SUM(ri.return_qty) as total_ret
+        FROM return_items ri
+        JOIN return_orders r ON ri.return_order_id = r.id
+        WHERE r.transaction_id = ? AND COALESCE(r.status, 'completed') != 'voided'
+        GROUP BY ri.product_id, ri.unit_name
+      ''', [ro.transactionId]);
+      final remMap = <String, double>{
+        for (final r in remRetRows)
+          '${r['product_id']}_${r['unit_name']}': (r['total_ret'] as num?)?.toDouble() ?? 0.0,
+      };
+      final double totalRemRet = remMap.values.fold(0.0, (s, e) => s + e);
+      String nextTxStatus = 'completed';
+      if (totalRemRet > 0.0001) {
+        bool allRet = origItems.isNotEmpty;
+        for (final e in purchasedMap.entries) {
+          if ((remMap[e.key] ?? 0.0) + 0.0001 < e.value) {
+            allRet = false;
+            break;
+          }
+        }
+        nextTxStatus = allRet ? 'returned' : 'partial_return';
+      }
+      await txn.update(
+        'transactions',
+        {'status': nextTxStatus},
+        where: 'id = ?',
+        whereArgs: [ro.transactionId],
+      );
+
+      // 6. Audit log
+      await txn.insert('audit_logs', {
+        'timestamp': nowIso,
+        'user_id': userId,
+        'user_name': userName,
+        'user_role': '',
+        'action_type': 'void_retur',
+        'module': 'retur',
+        'object_id': ro.returnNumber,
+        'before_value': 'status=completed, refund=${ro.totalRefund}, exchange=${ro.exchangeTotal}',
+        'after_value': 'status=voided, tx_status=$nextTxStatus',
+        'details': 'Pembatalan Retur #${ro.returnNumber} (Nota #${ro.invoiceNumber}): ${reason.trim()}',
+      });
+    });
+  }
+
+  /// Releases quarantined stock to either 'sellable' (products.stock) or 'damaged' (products.damaged_stock).
+  Future<void> releaseQuarantineStock({
+    required int productId,
+    required double qty,
+    required String destination, // 'sellable' | 'damaged'
+    required int userId,
+    required String userName,
+    String note = '',
+  }) async {
+    if (qty <= 0) {
+      throw StateError('Jumlah karantina yang dilepas harus lebih dari 0.');
+    }
+    if (destination != 'sellable' && destination != 'damaged') {
+      throw StateError('Tujuan pelepasan karantina harus "sellable" atau "damaged".');
+    }
+    final db = await database;
+    await db.transaction((txn) async {
+      final refNum = 'QRL-${DateTime.now().millisecondsSinceEpoch}';
+      await _recordStockMovement(
+        txn,
+        productId: productId,
+        movementType: MovementTypes.quarantineRelease,
+        bucket: 'quarantine',
+        qtyDelta: -qty,
+        referenceType: 'quarantine_release',
+        referenceNumber: refNum,
+        userId: userId,
+        userName: userName,
+        note: 'Keluar karantina menuju ${destination == 'sellable' ? 'Stok Jual' : 'Stok Rusak'}${note.isNotEmpty ? ": $note" : ""}',
+        enforceNonNegative: true,
+      );
+      await _recordStockMovement(
+        txn,
+        productId: productId,
+        movementType: destination == 'sellable' ? MovementTypes.quarantineRelease : MovementTypes.damagedIn,
+        bucket: destination,
+        qtyDelta: qty,
+        referenceType: 'quarantine_release',
+        referenceNumber: refNum,
+        userId: userId,
+        userName: userName,
+        note: 'Hasil inspeksi karantina (${destination == 'sellable' ? 'Layak Jual' : 'Rusak/Afkir'})${note.isNotEmpty ? ": $note" : ""}',
+        enforceNonNegative: false,
+      );
+    });
+  }
+
+  Future<List<InventoryMovementModel>> getInventoryMovements({
+    int? productId,
+    String? movementType,
+    DateTime? start,
+    DateTime? end,
+    int limit = 200,
+  }) async {
+    final db = await database;
+    final whereParts = <String>[];
+    final args = <dynamic>[];
+    if (productId != null) {
+      whereParts.add('product_id = ?');
+      args.add(productId);
+    }
+    if (movementType != null && movementType.isNotEmpty) {
+      whereParts.add('movement_type = ?');
+      args.add(movementType);
+    }
+    if (start != null && end != null) {
+      whereParts.add('created_at >= ? AND created_at <= ?');
+      args.addAll([
+        DateTime(start.year, start.month, start.day).toIso8601String(),
+        DateTime(end.year, end.month, end.day, 23, 59, 59, 999).toIso8601String(),
+      ]);
+    }
+    final res = await db.query(
+      'inventory_movements',
+      where: whereParts.isEmpty ? null : whereParts.join(' AND '),
+      whereArgs: args.isEmpty ? null : args,
+      orderBy: 'id DESC',
+      limit: limit,
+    );
+    return res.map((e) => InventoryMovementModel.fromMap(e)).toList();
+  }
+
+  Future<List<ProductModel>> getQuarantineAndDamagedProducts() async {
+    final db = await database;
+    final res = await db.query(
+      'products',
+      where: 'quarantine_stock > 0 OR damaged_stock > 0',
+      orderBy: 'quarantine_stock DESC, damaged_stock DESC, name ASC',
+    );
+    return res.map((e) => ProductModel.fromMap(e)).toList();
+  }
+
+  Future<double> getCustomerCreditBalance(int customerId) async {
+    final db = await database;
+    return await _getCustomerCreditBalanceTxn(db, customerId);
+  }
+
+  Future<List<CustomerCreditEntryModel>> getCustomerCreditLedger(int customerId, {int limit = 100}) async {
+    final db = await database;
+    final res = await db.query(
+      'customer_credit_ledger',
+      where: 'customer_id = ?',
+      whereArgs: [customerId],
+      orderBy: 'id DESC',
+      limit: limit,
+    );
+    return res.map((e) => CustomerCreditEntryModel.fromMap(e)).toList();
+  }
+
+  Future<Map<int, double>> getAllCustomerCreditBalances() async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT customer_id,
+        COALESCE(SUM(
+          CASE
+            WHEN entry_type IN ('credit_issued', 'manual_adjustment') THEN amount
+            WHEN entry_type IN ('credit_redeemed', 'credit_reversed') THEN -amount
+            ELSE 0
+          END
+        ), 0.0) as bal
+      FROM customer_credit_ledger
+      GROUP BY customer_id
+    ''');
+    final map = <int, double>{};
+    for (final r in rows) {
+      final cid = r['customer_id'] as int?;
+      final bal = (r['bal'] as num?)?.toDouble() ?? 0.0;
+      if (cid != null && bal > 0.001) {
+        map[cid] = bal;
+      }
+    }
+    return map;
+  }
+
+  /// Non-destructively inspects historical pre-v4 returns that may have anomalous stock/exchange state
+  /// (e.g., legacy 'tukar_barang' with no exchange items) so owner can audit & adjust via Stock Opname.
+  Future<List<Map<String, dynamic>>> getLegacyReturnReconciliationReport() async {
+    final db = await database;
+    final rows = await db.query(
+      'return_orders',
+      where: "COALESCE(status, 'completed') != 'voided'",
+      orderBy: 'date DESC',
+    );
+    final findings = <Map<String, dynamic>>[];
+    for (final raw in rows) {
+      final ro = await _hydrateReturnOrder(db, raw);
+      final movCountRows = await db.rawQuery(
+        "SELECT COUNT(*) as c FROM inventory_movements WHERE reference_type = 'return_order' AND reference_id = ?",
+        [ro.id],
+      );
+      final hasMovements = ((movCountRows.first['c'] as num?)?.toInt() ?? 0) > 0;
+
+      if (ro.refundMethod == RefundMethods.tukarBarang && ro.exchangeItems.isEmpty) {
+        findings.add({
+          'returnId': ro.id,
+          'returnNumber': ro.returnNumber,
+          'invoiceNumber': ro.invoiceNumber,
+          'date': ro.date,
+          'severity': 'HIGH',
+          'issueType': 'legacy_tukar_tanpa_keluar',
+          'message':
+              'Retur Tukar Barang lama (#${ro.returnNumber}) belum memiliki catatan item keluar pengganti (${ro.items.map((i) => "${i.productName} x${i.returnQty}").join(", ")}). Periksa stok fisik & sesuaikan via Stok Opname bila berlebih.',
+        });
+      } else if (!hasMovements && ro.items.any((i) => i.condition != ReturnConditions.baik)) {
+        findings.add({
+          'returnId': ro.id,
+          'returnNumber': ro.returnNumber,
+          'invoiceNumber': ro.invoiceNumber,
+          'date': ro.date,
+          'severity': 'MEDIUM',
+          'issueType': 'legacy_rusak_tanpa_ledger',
+          'message':
+              'Retur barang rusak/cacat versi lama (#${ro.returnNumber}) belum memiliki catatan mutasi bucket rusak pada ledger v4.',
+        });
+      }
+    }
+    return findings;
   }
 
   // ================= SHIFTS & CASH FLOW =================
@@ -1987,7 +3491,7 @@ class DatabaseHelper {
       [startIso],
     );
     final prevSalesCashRes = await db.rawQuery(
-      "SELECT COALESCE(SUM(grand_total), 0) as s FROM transactions WHERE status != 'voided' AND payment_method = 'tunai' AND date < ?",
+      "SELECT COALESCE(SUM(MAX(0, grand_total - COALESCE(credit_used, 0))), 0) as s FROM transactions WHERE status != 'voided' AND payment_method = 'tunai' AND date < ?",
       [startIso],
     );
     final prevCashInRes = await db.rawQuery(
@@ -2043,28 +3547,31 @@ class DatabaseHelper {
     double totalSalesNonCash = 0.0;
     for (final row in txInRange) {
       final t = TransactionModel.fromMap(row);
-      if (t.paymentMethod == 'tunai') {
-        totalSalesCash += t.grandTotal;
+      final netCashOrBank = (t.grandTotal - t.creditUsed).clamp(0.0, t.grandTotal);
+      if (t.paymentMethod == 'tunai' && netCashOrBank > 0) {
+        totalSalesCash += netCashOrBank;
         entries.add({
           'date': t.date,
           'type': 'in',
           'category': 'Penjualan Tunai',
-          'amount': t.grandTotal,
+          'amount': netCashOrBank,
           'paymentMethod': 'tunai',
           'accountName': 'Laci Kasir',
           'sourceType': 'penjualan',
           'sourceId': t.invoiceNumber,
           'cashierName': t.cashierName,
-          'note': 'Nota #${t.invoiceNumber} (${t.customerName})',
+          'note': t.creditUsed > 0
+              ? 'Nota #${t.invoiceNumber} (${t.customerName}) - Potong Kredit Rp ${t.creditUsed.toInt()}'
+              : 'Nota #${t.invoiceNumber} (${t.customerName})',
           'isInternalTransfer': false,
         });
-      } else if (t.paymentMethod == 'qris' || t.paymentMethod == 'transfer') {
-        totalSalesNonCash += t.grandTotal;
+      } else if ((t.paymentMethod == 'qris' || t.paymentMethod == 'transfer') && netCashOrBank > 0) {
+        totalSalesNonCash += netCashOrBank;
         entries.add({
           'date': t.date,
           'type': 'in',
           'category': 'Penjualan ${t.paymentMethod.toUpperCase()}',
-          'amount': t.grandTotal,
+          'amount': netCashOrBank,
           'paymentMethod': t.paymentMethod,
           'accountName': t.paymentMethod == 'qris' ? 'QRIS' : 'Rekening Bank',
           'sourceType': 'penjualan',
@@ -2104,6 +3611,8 @@ class DatabaseHelper {
       } else if (f.isIn) {
         if (f.sourceType == 'kasbon_bayar' || f.category.toLowerCase().contains('kasbon')) {
           totalDebtPayments += f.amount;
+        } else if (f.sourceType == 'retur_void') {
+          totalRefundOut = (totalRefundOut - f.amount).clamp(0.0, double.infinity);
         } else {
           totalOtherIn += f.amount;
         }
@@ -2119,6 +3628,8 @@ class DatabaseHelper {
           }
         } else if (f.sourceType == 'utang_supplier_bayar') {
           totalSupplierPayments += f.amount;
+        } else if (f.sourceType == 'retur_void') {
+          totalOtherIn = (totalOtherIn - f.amount).clamp(0.0, double.infinity);
         } else if (f.sourceType == 'retur' || f.category.toLowerCase().contains('retur')) {
           totalRefundOut += f.amount;
         } else {
@@ -2630,9 +4141,18 @@ class DatabaseHelper {
           'subtotal': item.subtotal,
         });
 
-        await txn.rawUpdate(
-          'UPDATE products SET stock = stock + ? WHERE id = ?',
-          [item.baseStockQty, item.productId],
+        await _recordStockMovement(
+          txn,
+          productId: item.productId,
+          movementType: MovementTypes.purchaseIn,
+          bucket: 'sellable',
+          qtyDelta: item.baseStockQty,
+          referenceType: 'purchase',
+          referenceId: pid,
+          referenceNumber: purchase.purchaseNumber,
+          userName: purchase.createdBy,
+          note: 'Pembelian #${purchase.purchaseNumber} (${item.qty} ${item.unitName})',
+          enforceNonNegative: false,
         );
 
         if (updateProductCostPrice && item.conversionFactor > 0) {
@@ -2715,9 +4235,18 @@ class DatabaseHelper {
       final itemRows = await txn.query('purchase_items', where: 'purchase_id = ?', whereArgs: [purchaseId]);
       for (final m in itemRows) {
         final item = PurchaseItemModel.fromMap(m);
-        await txn.rawUpdate(
-          'UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?',
-          [item.baseStockQty, item.productId],
+        await _recordStockMovement(
+          txn,
+          productId: item.productId,
+          movementType: MovementTypes.purchaseVoidOut,
+          bucket: 'sellable',
+          qtyDelta: -item.baseStockQty,
+          referenceType: 'purchase_void',
+          referenceId: purchaseId,
+          referenceNumber: p.purchaseNumber,
+          userName: cancelledBy,
+          note: 'Batal Pembelian #${p.purchaseNumber}',
+          enforceNonNegative: false,
         );
       }
 
@@ -2936,11 +4465,18 @@ class DatabaseHelper {
 
         final id = await txn.insert('stock_opnames', synced.toMap());
         insertedIds.add(id);
-        await txn.update(
-          'products',
-          {'stock': entry.physicalStock},
-          where: 'id = ?',
-          whereArgs: [entry.productId],
+        await _recordStockMovement(
+          txn,
+          productId: entry.productId,
+          movementType: MovementTypes.opnameAdjust,
+          bucket: 'sellable',
+          qtyDelta: diff,
+          referenceType: 'stock_opname',
+          referenceId: id,
+          referenceNumber: 'OPN-$id',
+          userName: entry.auditedBy,
+          note: entry.note.isNotEmpty ? entry.note : 'Stok opname fisik ${entry.physicalStock}',
+          enforceNonNegative: false,
         );
       }
       return insertedIds;
@@ -3456,6 +4992,7 @@ class DatabaseHelper {
       if (p.id != null) prodById[p.id!] = p;
     }
 
+    double creditRedeemedSales = 0.0;
     for (final row in txRows) {
       final t = TransactionModel.fromMap(row);
       final itemRows = await db.query('transaction_items', where: 'transaction_id = ?', whereArgs: [t.id]);
@@ -3466,22 +5003,24 @@ class DatabaseHelper {
 
       grossSales += t.grandTotal;
       totalDiscount += t.discountTotal;
+      creditRedeemedSales += t.creditUsed;
 
       final dayKey = '${t.date.year}-${t.date.month.toString().padLeft(2, '0')}-${t.date.day.toString().padLeft(2, '0')}';
       dailyTrend[dayKey] = (dailyTrend[dayKey] ?? 0.0) + t.grandTotal;
 
+      final netCollectedMethod = (t.grandTotal - t.creditUsed).clamp(0.0, t.grandTotal);
       switch (t.paymentMethod) {
         case 'tunai':
-          cashSales += t.grandTotal;
+          cashSales += netCollectedMethod;
           break;
         case 'transfer':
-          transferSales += t.grandTotal;
+          transferSales += netCollectedMethod;
           break;
         case 'qris':
-          qrisSales += t.grandTotal;
+          qrisSales += netCollectedMethod;
           break;
         case 'kasbon':
-          kasbonSales += t.grandTotal;
+          kasbonSales += netCollectedMethod;
           break;
       }
 
@@ -3540,19 +5079,85 @@ class DatabaseHelper {
       }
     }
 
-    // Actual returns in period
+    // Actual active (non-voided) returns & exchanges in period
     final returnRows = await db.query(
       'return_orders',
-      where: 'date >= ? AND date <= ?',
+      where: "COALESCE(status, 'completed') != 'voided' AND date >= ? AND date <= ?",
       whereArgs: [startIso, endIso],
     );
-    double totalReturn = 0.0;
+    double grossReturnValue = 0.0;
+    double exchangeOutValue = 0.0;
+    double netReturnAdjustment = 0.0;
+    double totalHppRecovered = 0.0;
+    double totalExchangeHpp = 0.0;
+    double totalDamagedLoss = 0.0;
+    double cashReturnOut = 0.0;
+    double transferReturnOut = 0.0;
+    double qrisReturnOut = 0.0;
+    double creditIssuedTotal = 0.0;
+    double debtOffsetTotal = 0.0;
+    double exchangeDiffInCash = 0.0;
+    double exchangeDiffInNonCash = 0.0;
+
     for (final rr in returnRows) {
-      totalReturn += (rr['total_refund'] as num?)?.toDouble() ?? 0.0;
+      final ro = await _hydrateReturnOrder(db, rr);
+      grossReturnValue += ro.totalRefund;
+      exchangeOutValue += ro.exchangeTotal;
+      netReturnAdjustment += (ro.totalRefund - ro.exchangeTotal);
+
+      for (final ri in ro.items) {
+        final itemCostTotal = ri.costPrice * ri.conversionFactor * ri.returnQty;
+        if (ri.stockTreatment == StockTreatments.restockSellable) {
+          totalHppRecovered += itemCostTotal;
+        } else if (ri.stockTreatment == StockTreatments.damaged) {
+          totalDamagedLoss += itemCostTotal;
+        }
+      }
+      for (final ex in ro.exchangeItems) {
+        totalExchangeHpp += (ex.costPrice * ex.conversionFactor * ex.qty);
+      }
+      for (final st in ro.settlements) {
+        if (st.direction == 'out_to_customer') {
+          if (st.method == RefundMethods.tunai) cashReturnOut += st.amount;
+          if (st.method == RefundMethods.transfer) transferReturnOut += st.amount;
+          if (st.method == RefundMethods.qrisManual) qrisReturnOut += st.amount;
+        } else if (st.direction == 'credit_issued') {
+          creditIssuedTotal += st.amount;
+        } else if (st.direction == 'debt_offset') {
+          debtOffsetTotal += st.amount;
+        } else if (st.direction == 'in_from_customer') {
+          if (st.method == RefundMethods.tunai) {
+            exchangeDiffInCash += st.amount;
+          } else {
+            exchangeDiffInNonCash += st.amount;
+          }
+        }
+      }
     }
 
+    // Account for quarantine releases inspected & moved in period (sellable recovers HPP; damaged records write-off loss)
+    final quarantineMovRows = await db.query(
+      'inventory_movements',
+      where: "movement_type IN ('quarantine_release', 'damaged_in') AND reference_type = 'quarantine_release' AND created_at >= ? AND created_at <= ?",
+      whereArgs: [startIso, endIso],
+    );
+    for (final qm in quarantineMovRows) {
+      final pid = qm['product_id'] as int;
+      final delta = (qm['qty_delta'] as num?)?.toDouble() ?? 0.0;
+      final bucket = (qm['bucket'] ?? '').toString();
+      if (delta <= 0) continue;
+      final unitCost = prodById[pid]?.costPrice ?? 0.0;
+      if (bucket == 'sellable') {
+        totalHppRecovered += (unitCost * delta);
+      } else if (bucket == 'damaged') {
+        totalDamagedLoss += (unitCost * delta);
+      }
+    }
+
+    final adjustedHpp = (totalHpp - totalHppRecovered + totalExchangeHpp).clamp(0.0, double.infinity);
+    final totalReturn = netReturnAdjustment;
     final netSales = (grossSales - totalReturn).clamp(0.0, double.infinity);
-    final grossProfit = netSales - totalHpp;
+    final grossProfit = netSales - adjustedHpp;
     final avgTrxValue = validTx.isNotEmpty ? grossSales / validTx.length : 0.0;
 
     final soldProductsList = productStats.values.toList();
@@ -3654,20 +5259,46 @@ class DatabaseHelper {
         'transferSales': transferSales,
         'qrisSales': qrisSales,
         'kasbonSales': kasbonSales,
+        'creditRedeemedSales': creditRedeemedSales,
         'totalDiscount': totalDiscount,
         'totalReturn': totalReturn,
+        'grossReturnValue': grossReturnValue,
+        'exchangeOutValue': exchangeOutValue,
+        'netReturnAdjustment': netReturnAdjustment,
         'dailySeries': [
           for (final k in sortedDailyKeys) {'date': k, 'total': dailyTrend[k] ?? 0.0},
         ],
       },
       'profit': {
-        'totalHpp': totalHpp,
+        'totalHpp': adjustedHpp,
+        'grossSalesHpp': totalHpp,
+        'hppRecovered': totalHppRecovered,
+        'exchangeHpp': totalExchangeHpp,
+        'damagedLoss': totalDamagedLoss,
         'grossSales': grossSales,
         'totalDiscount': totalDiscount,
         'totalReturn': totalReturn,
+        'grossReturnValue': grossReturnValue,
+        'exchangeOutValue': exchangeOutValue,
         'netSales': netSales,
         'grossProfit': grossProfit,
         'profitMargin': netSales > 0 ? (grossProfit / netSales) * 100 : 0.0,
+      },
+      'returns': {
+        'count': returnRows.length,
+        'grossReturnValue': grossReturnValue,
+        'exchangeOutValue': exchangeOutValue,
+        'netReturnAdjustment': netReturnAdjustment,
+        'cashReturnOut': cashReturnOut,
+        'transferReturnOut': transferReturnOut,
+        'qrisReturnOut': qrisReturnOut,
+        'creditIssuedTotal': creditIssuedTotal,
+        'debtOffsetTotal': debtOffsetTotal,
+        'exchangeDiffInCash': exchangeDiffInCash,
+        'exchangeDiffInNonCash': exchangeDiffInNonCash,
+        'hppRecovered': totalHppRecovered,
+        'exchangeHpp': totalExchangeHpp,
+        'damagedLoss': totalDamagedLoss,
       },
       'products': {
         'topSelling': topSellingProducts,
