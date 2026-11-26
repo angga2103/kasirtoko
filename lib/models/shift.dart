@@ -2,6 +2,9 @@ class ShiftModel {
   final int? id;
   final int cashierId;
   final String cashierName;
+  final String terminalId;
+  final int cashRegisterId;
+  final String drawerMode; // 'SHARED_DRAWER' | 'INDIVIDUAL_DRAWER'
   final DateTime startTime;
   final DateTime? endTime;
   final double startingCash;
@@ -22,6 +25,9 @@ class ShiftModel {
     this.id,
     required this.cashierId,
     required this.cashierName,
+    this.terminalId = 'ADMIN',
+    this.cashRegisterId = 1,
+    this.drawerMode = 'SHARED_DRAWER',
     required this.startTime,
     this.endTime,
     required this.startingCash,
@@ -52,6 +58,9 @@ class ShiftModel {
       if (id != null) 'id': id,
       'cashier_id': cashierId,
       'cashier_name': cashierName,
+      'terminal_id': terminalId,
+      'cash_register_id': cashRegisterId,
+      'drawer_mode': drawerMode,
       'start_time': startTime.toIso8601String(),
       'end_time': endTime?.toIso8601String(),
       'starting_cash': startingCash,
@@ -71,10 +80,14 @@ class ShiftModel {
   }
 
   factory ShiftModel.fromMap(Map<String, dynamic> map) {
+    final rawTerm = (map['terminal_id'] ?? '').toString().trim();
     return ShiftModel(
       id: map['id'] as int?,
       cashierId: map['cashier_id'] ?? 1,
       cashierName: map['cashier_name'] ?? 'Kasir',
+      terminalId: rawTerm.isNotEmpty ? rawTerm : 'ADMIN',
+      cashRegisterId: (map['cash_register_id'] as num?)?.toInt() ?? 1,
+      drawerMode: (map['drawer_mode'] ?? 'SHARED_DRAWER').toString(),
       startTime: DateTime.parse(map['start_time']),
       endTime: map['end_time'] != null ? DateTime.parse(map['end_time']) : null,
       startingCash: (map['starting_cash'] as num).toDouble(),

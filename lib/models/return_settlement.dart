@@ -8,6 +8,8 @@ class ReturnSettlementModel {
   final String accountName;
   final String referenceNumber;
   final int? shiftId;
+  final int? settlementShiftId;
+  final int? settlementCashRegisterId;
   final int? customerId;
   final int? cashFlowId;
   final String note;
@@ -23,6 +25,8 @@ class ReturnSettlementModel {
     this.accountName = '',
     this.referenceNumber = '',
     this.shiftId,
+    this.settlementShiftId,
+    this.settlementCashRegisterId,
     this.customerId,
     this.cashFlowId,
     this.note = '',
@@ -40,6 +44,8 @@ class ReturnSettlementModel {
       'account_name': accountName,
       'reference_number': referenceNumber,
       if (shiftId != null) 'shift_id': shiftId,
+      if (settlementShiftId != null) 'settlement_shift_id': settlementShiftId,
+      if (settlementCashRegisterId != null) 'settlement_cash_register_id': settlementCashRegisterId,
       if (customerId != null) 'customer_id': customerId,
       if (cashFlowId != null) 'cash_flow_id': cashFlowId,
       'note': note,
@@ -58,6 +64,8 @@ class ReturnSettlementModel {
       accountName: (map['account_name'] ?? '').toString(),
       referenceNumber: (map['reference_number'] ?? '').toString(),
       shiftId: map['shift_id'] as int?,
+      settlementShiftId: map['settlement_shift_id'] as int?,
+      settlementCashRegisterId: map['settlement_cash_register_id'] as int?,
       customerId: map['customer_id'] as int?,
       cashFlowId: map['cash_flow_id'] as int?,
       note: (map['note'] ?? '').toString(),

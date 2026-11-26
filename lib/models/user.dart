@@ -57,6 +57,7 @@ class AppPermissions {
   static const String managePrinters = 'manage_printers';
   static const String manageStoreSettings = 'manage_store_settings';
   static const String manageEmployees = 'manage_employees';
+  static const String openCashDrawer = 'open_cash_drawer';
 
   static const Map<String, String> labels = {
     viewDashboard: 'Dashboard & Ringkasan',
@@ -74,6 +75,7 @@ class AppPermissions {
     managePrinters: 'Pengaturan Printer & Struk',
     manageStoreSettings: 'Pengaturan Toko & Backup',
     manageEmployees: 'Manajemen Karyawan & Hak Akses',
+    openCashDrawer: 'Buka Laci Kasir Manual',
   };
 
   static Map<String, bool> allTrue() => {
@@ -101,6 +103,7 @@ class AppPermissions {
           managePrinters: true,
           manageStoreSettings: true,
           manageEmployees: false,
+          openCashDrawer: true,
         };
       case AppRoles.supervisor:
         return {
@@ -119,6 +122,7 @@ class AppPermissions {
           managePrinters: true,
           manageStoreSettings: false,
           manageEmployees: false,
+          openCashDrawer: true,
         };
       case AppRoles.cashier:
         return {
@@ -137,6 +141,7 @@ class AppPermissions {
           managePrinters: false,
           manageStoreSettings: false,
           manageEmployees: false,
+          openCashDrawer: false,
         };
       case AppRoles.warehouse:
         return {
@@ -155,6 +160,7 @@ class AppPermissions {
           managePrinters: false,
           manageStoreSettings: false,
           manageEmployees: false,
+          openCashDrawer: false,
         };
       case AppRoles.technician:
         return {
@@ -173,6 +179,7 @@ class AppPermissions {
           managePrinters: false,
           manageStoreSettings: false,
           manageEmployees: false,
+          openCashDrawer: false,
         };
       case AppRoles.delivery:
         return {
@@ -191,6 +198,7 @@ class AppPermissions {
           managePrinters: false,
           manageStoreSettings: false,
           manageEmployees: false,
+          openCashDrawer: false,
         };
       default:
         return defaultForRole(AppRoles.cashier);
@@ -206,6 +214,11 @@ class UserModel {
   final String passwordSalt;
   final String pin; // Legacy masked field (empty for hashed users)
   final String pinHash;
+  final String pinSalt;
+  final String hashVersion;
+  final String pinLookupHash;
+  final int failedPinCount;
+  final DateTime? pinLockedUntil;
   final String role;
   final String phone;
   final String? photoPath;
@@ -220,6 +233,11 @@ class UserModel {
     this.passwordSalt = '',
     this.pin = '',
     this.pinHash = '',
+    this.pinSalt = '',
+    this.hashVersion = 'v2_pbkdf2_sha256',
+    this.pinLookupHash = '',
+    this.failedPinCount = 0,
+    this.pinLockedUntil,
     required this.role,
     this.phone = '',
     this.photoPath,
@@ -238,6 +256,11 @@ class UserModel {
 
   String get roleDisplay => AppRoles.displayName(role);
 
+  bool isPinLocked([DateTime? now]) {
+    if (pinLockedUntil == null) return false;
+    return (now ?? DateTime.now()).isBefore(pinLockedUntil!);
+  }
+
   bool hasPermission(String permissionKey) {
     if (isOwner) return true;
     return permissions[permissionKey] ?? false;
@@ -252,6 +275,11 @@ class UserModel {
       'password_salt': passwordSalt,
       'pin': pin,
       'pin_hash': pinHash,
+      'pin_salt': pinSalt,
+      'hash_version': hashVersion,
+      'pin_lookup_hash': pinLookupHash,
+      'failed_pin_count': failedPinCount,
+      'pin_locked_until': pinLockedUntil?.toIso8601String(),
       'role': role,
       'phone': phone,
       'photo_path': photoPath,
@@ -273,14 +301,30 @@ class UserModel {
       } catch (_) {}
     }
 
+    final rawHashVer = (map['hash_version'] ?? '').toString();
+    final pinHash = (map['pin_hash'] ?? '').toString();
+    final pwHash = (map['password_hash'] ?? '').toString();
+    final inferredVersion = rawHashVer.isNotEmpty
+        ? rawHashVer
+        : ((pinHash.startsWith(r'$pbkdf2-sha256$') || pwHash.startsWith(r'$pbkdf2-sha256$'))
+            ? 'v2_pbkdf2_sha256'
+            : 'legacy_v1');
+
     return UserModel(
       id: map['id'] as int?,
       name: (map['name'] ?? '').toString(),
       username: (map['username'] ?? '').toString(),
-      passwordHash: (map['password_hash'] ?? '').toString(),
+      passwordHash: pwHash,
       passwordSalt: (map['password_salt'] ?? '').toString(),
       pin: (map['pin'] ?? '').toString(),
-      pinHash: (map['pin_hash'] ?? '').toString(),
+      pinHash: pinHash,
+      pinSalt: (map['pin_salt'] ?? '').toString(),
+      hashVersion: inferredVersion,
+      pinLookupHash: (map['pin_lookup_hash'] ?? '').toString(),
+      failedPinCount: (map['failed_pin_count'] as num?)?.toInt() ?? 0,
+      pinLockedUntil: map['pin_locked_until'] != null
+          ? DateTime.tryParse(map['pin_locked_until'].toString())
+          : null,
       role: role,
       phone: (map['phone'] ?? '').toString(),
       photoPath: map['photo_path'] as String?,
@@ -297,6 +341,12 @@ class UserModel {
     String? passwordSalt,
     String? pin,
     String? pinHash,
+    String? pinSalt,
+    String? hashVersion,
+    String? pinLookupHash,
+    int? failedPinCount,
+    DateTime? pinLockedUntil,
+    bool clearPinLockedUntil = false,
     String? role,
     String? phone,
     String? photoPath,
@@ -311,6 +361,11 @@ class UserModel {
       passwordSalt: passwordSalt ?? this.passwordSalt,
       pin: pin ?? this.pin,
       pinHash: pinHash ?? this.pinHash,
+      pinSalt: pinSalt ?? this.pinSalt,
+      hashVersion: hashVersion ?? this.hashVersion,
+      pinLookupHash: pinLookupHash ?? this.pinLookupHash,
+      failedPinCount: failedPinCount ?? this.failedPinCount,
+      pinLockedUntil: clearPinLockedUntil ? null : (pinLockedUntil ?? this.pinLockedUntil),
       role: role ?? this.role,
       phone: phone ?? this.phone,
       photoPath: photoPath ?? this.photoPath,

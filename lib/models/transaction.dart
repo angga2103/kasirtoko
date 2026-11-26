@@ -7,6 +7,9 @@ class TransactionModel {
   final DateTime date;
   final int cashierId;
   final String cashierName;
+  final String terminalId;
+  final int cashRegisterId;
+  final String? idempotencyKey;
   final int? customerId;
   final int? shiftId;
   final String customerName;
@@ -32,6 +35,9 @@ class TransactionModel {
     required this.date,
     required this.cashierId,
     required this.cashierName,
+    this.terminalId = 'ADMIN',
+    this.cashRegisterId = 1,
+    this.idempotencyKey,
     this.customerId,
     this.shiftId,
     this.customerName = 'Pelanggan Umum',
@@ -69,6 +75,9 @@ class TransactionModel {
       'date': date.toIso8601String(),
       'cashier_id': cashierId,
       'cashier_name': cashierName,
+      'terminal_id': terminalId,
+      'cash_register_id': cashRegisterId,
+      if (idempotencyKey != null && idempotencyKey!.isNotEmpty) 'idempotency_key': idempotencyKey,
       if (customerId != null) 'customer_id': customerId,
       if (shiftId != null) 'shift_id': shiftId,
       'customer_name': customerName,
@@ -90,12 +99,16 @@ class TransactionModel {
   }
 
   factory TransactionModel.fromMap(Map<String, dynamic> map) {
+    final rawTerm = (map['terminal_id'] ?? '').toString().trim();
     return TransactionModel(
       id: map['id'] as int?,
       invoiceNumber: map['invoice_number'],
       date: DateTime.parse(map['date']),
       cashierId: map['cashier_id'] ?? 1,
       cashierName: map['cashier_name'] ?? 'Kasir',
+      terminalId: rawTerm.isNotEmpty ? rawTerm : 'ADMIN',
+      cashRegisterId: (map['cash_register_id'] as num?)?.toInt() ?? 1,
+      idempotencyKey: map['idempotency_key'] as String?,
       customerId: map['customer_id'] as int?,
       shiftId: map['shift_id'] as int?,
       customerName: map['customer_name'] ?? 'Pelanggan Umum',

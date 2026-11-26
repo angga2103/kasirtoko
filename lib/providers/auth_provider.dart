@@ -8,6 +8,7 @@ class AuthProvider extends ChangeNotifier {
   UserModel? _currentUser;
   List<UserModel> _users = [];
   bool _isLoading = false;
+  String? _lastAuthError;
 
   UserModel? get currentUser => _currentUser;
   List<UserModel> get users => _users;
@@ -17,6 +18,7 @@ class AuthProvider extends ChangeNotifier {
       .toList();
   bool get isLoading => _isLoading;
   bool get isLoggedIn => _currentUser != null;
+  String? get lastAuthError => _lastAuthError;
 
   bool get isOwner => _currentUser?.isOwner ?? false;
   bool get isAdmin => _currentUser?.isAdmin ?? false;
@@ -38,34 +40,38 @@ class AuthProvider extends ChangeNotifier {
 
   Future<bool> loginWithPin(String pin) async {
     _isLoading = true;
+    _lastAuthError = null;
     notifyListeners();
 
-    final user = await DatabaseHelper.instance.loginWithPin(pin);
+    final res = await DatabaseHelper.instance.authenticateWithPin(pin);
     _isLoading = false;
 
-    if (user != null) {
-      _currentUser = user;
-      await logAction('login', 'Login via PIN oleh ${user.name} (${user.roleDisplay})');
+    if (res.isSuccess && res.user != null) {
+      _currentUser = res.user;
+      await logAction('login', 'Login via PIN oleh ${res.user!.name} (${res.user!.roleDisplay})');
       notifyListeners();
       return true;
     }
+    _lastAuthError = res.message.isNotEmpty ? res.message : 'PIN tidak sesuai atau akun sedang dinonaktifkan.';
     notifyListeners();
     return false;
   }
 
   Future<bool> loginWithPassword(String username, String password) async {
     _isLoading = true;
+    _lastAuthError = null;
     notifyListeners();
 
-    final user = await DatabaseHelper.instance.loginWithPassword(username, password);
+    final res = await DatabaseHelper.instance.authenticateWithPassword(username, password);
     _isLoading = false;
 
-    if (user != null) {
-      _currentUser = user;
-      await logAction('login', 'Login via username ($username) oleh ${user.name}');
+    if (res.isSuccess && res.user != null) {
+      _currentUser = res.user;
+      await logAction('login', 'Login via username ($username) oleh ${res.user!.name}');
       notifyListeners();
       return true;
     }
+    _lastAuthError = res.message.isNotEmpty ? res.message : 'Username atau password salah.';
     notifyListeners();
     return false;
   }
@@ -115,22 +121,52 @@ class AuthProvider extends ChangeNotifier {
     );
     if (conflict) return 'Username "$cleanUsername" sudah dipakai karyawan lain.';
 
-    String salt = existing?.passwordSalt ?? '';
-    if (salt.isEmpty) salt = SecurityHelper.generateSalt();
-
+    String pwSalt = existing?.passwordSalt ?? '';
     String pwHash = existing?.passwordHash ?? '';
+    String pSalt = existing?.pinSalt ?? '';
     String pHash = existing?.pinHash ?? '';
+    String pLookup = existing?.pinLookupHash ?? '';
+    String hashVersion = existing?.hashVersion ?? SecurityHelper.hashVersionV2Pbkdf2;
 
     if (newPassword != null && newPassword.trim().isNotEmpty) {
-      pwHash = SecurityHelper.hashSecret(newPassword.trim(), salt);
+      final pwPair = await SecurityHelper.hashSecretV2(
+        newPassword.trim(),
+        domain: SecurityHelper.domainPassword,
+      );
+      pwSalt = pwPair.salt;
+      pwHash = pwPair.hash;
+      hashVersion = SecurityHelper.hashVersionV2Pbkdf2;
     } else if (existingId == null) {
       return 'Password wajib diisi untuk karyawan baru.';
     }
 
-    if (newPin != null && newPin.trim().isNotEmpty) {
-      pHash = SecurityHelper.hashSecret(newPin.trim(), salt);
+    final cleanNewPin = newPin?.trim() ?? '';
+    if (cleanNewPin.isNotEmpty) {
+      final inUse = await DatabaseHelper.instance.isPinAlreadyInUse(
+        cleanNewPin,
+        excludeUserId: existingId,
+      );
+      if (inUse) {
+        return 'PIN ini sudah dipakai karyawan lain. Gunakan PIN unik per kasir.';
+      }
+      final pinPair = await SecurityHelper.hashSecretV2(
+        cleanNewPin,
+        domain: SecurityHelper.domainPin,
+      );
+      pSalt = pinPair.salt;
+      pHash = pinPair.hash;
+      pLookup = await SecurityHelper.computePinLookupDigest(cleanNewPin);
+      hashVersion = SecurityHelper.hashVersionV2Pbkdf2;
     } else if (pHash.isEmpty && newPassword != null && newPassword.trim().isNotEmpty) {
-      pHash = SecurityHelper.hashSecret(newPassword.trim(), salt);
+      final fallbackPin = newPassword.trim();
+      final pinPair = await SecurityHelper.hashSecretV2(
+        fallbackPin,
+        domain: SecurityHelper.domainPin,
+      );
+      pSalt = pinPair.salt;
+      pHash = pinPair.hash;
+      pLookup = await SecurityHelper.computePinLookupDigest(fallbackPin);
+      hashVersion = SecurityHelper.hashVersionV2Pbkdf2;
     }
 
     final finalPermissions = role == AppRoles.owner
@@ -142,9 +178,14 @@ class AuthProvider extends ChangeNotifier {
       name: name.trim(),
       username: cleanUsername,
       passwordHash: pwHash,
-      passwordSalt: salt,
+      passwordSalt: pwSalt,
       pin: '',
       pinHash: pHash,
+      pinSalt: pSalt,
+      hashVersion: hashVersion,
+      pinLookupHash: pLookup,
+      failedPinCount: existing?.failedPinCount ?? 0,
+      pinLockedUntil: existing?.pinLockedUntil,
       role: role,
       phone: phone.trim(),
       photoPath: photoPath ?? existing?.photoPath,
@@ -195,13 +236,23 @@ class AuthProvider extends ChangeNotifier {
     final me = _currentUser;
     if (me == null || me.id == null) return 'Sesi login tidak ditemukan.';
 
-    final validPw = me.passwordHash.isNotEmpty &&
-        me.passwordSalt.isNotEmpty &&
-        SecurityHelper.verifySecret(currentSecret, me.passwordSalt, me.passwordHash);
-    final validPin = me.pinHash.isNotEmpty &&
-        me.passwordSalt.isNotEmpty &&
-        SecurityHelper.verifySecret(currentSecret, me.passwordSalt, me.pinHash);
-    if (!validPw && !validPin) {
+    final pwCheck = await SecurityHelper.verifyCredential(
+      secret: currentSecret,
+      storedHash: me.passwordHash,
+      legacyOrV2Salt: me.passwordSalt,
+      expectedDomain: SecurityHelper.domainPassword,
+    );
+    ({bool valid, bool needsRehash}) pinCheck = (valid: false, needsRehash: false);
+    if (!pwCheck.valid) {
+      final effectivePinSalt = me.pinSalt.isNotEmpty ? me.pinSalt : me.passwordSalt;
+      pinCheck = await SecurityHelper.verifyCredential(
+        secret: currentSecret,
+        storedHash: me.pinHash,
+        legacyOrV2Salt: effectivePinSalt,
+        expectedDomain: SecurityHelper.domainPin,
+      );
+    }
+    if (!pwCheck.valid && !pinCheck.valid) {
       return 'Password atau PIN saat ini tidak cocok.';
     }
 
@@ -216,19 +267,55 @@ class AuthProvider extends ChangeNotifier {
     if (cleanPin.isNotEmpty && (cleanPin.length < 4 || cleanPin.length > 6)) {
       return 'PIN baru harus 4 sampai 6 digit.';
     }
+    if (cleanPin.isNotEmpty) {
+      final inUse = await DatabaseHelper.instance.isPinAlreadyInUse(cleanPin, excludeUserId: me.id);
+      if (inUse) {
+        return 'PIN ini sudah digunakan akun lain. Pilih PIN yang berbeda.';
+      }
+    }
 
-    final newSalt = SecurityHelper.generateSalt();
-    final updatedPwHash = cleanPw.isNotEmpty
-        ? SecurityHelper.hashSecret(cleanPw, newSalt)
-        : SecurityHelper.hashSecret(currentSecret, newSalt);
-    final updatedPinHash = cleanPin.isNotEmpty
-        ? SecurityHelper.hashSecret(cleanPin, newSalt)
-        : (validPin ? SecurityHelper.hashSecret(currentSecret, newSalt) : updatedPwHash);
+    String updatedPwSalt = me.passwordSalt;
+    String updatedPwHash = me.passwordHash;
+    if (cleanPw.isNotEmpty || pwCheck.needsRehash) {
+      final pwPair = await SecurityHelper.hashSecretV2(
+        cleanPw.isNotEmpty ? cleanPw : currentSecret,
+        domain: SecurityHelper.domainPassword,
+      );
+      updatedPwSalt = pwPair.salt;
+      updatedPwHash = pwPair.hash;
+    }
 
+    String updatedPinSalt = me.pinSalt;
+    String updatedPinHash = me.pinHash;
+    String updatedLookup = me.pinLookupHash;
+    if (cleanPin.isNotEmpty) {
+      final pinPair = await SecurityHelper.hashSecretV2(
+        cleanPin,
+        domain: SecurityHelper.domainPin,
+      );
+      updatedPinSalt = pinPair.salt;
+      updatedPinHash = pinPair.hash;
+      updatedLookup = await SecurityHelper.computePinLookupDigest(cleanPin);
+    } else if (pinCheck.valid && (pinCheck.needsRehash || updatedPinSalt.isEmpty)) {
+      final pinPair = await SecurityHelper.hashSecretV2(
+        currentSecret,
+        domain: SecurityHelper.domainPin,
+      );
+      updatedPinSalt = pinPair.salt;
+      updatedPinHash = pinPair.hash;
+      updatedLookup = await SecurityHelper.computePinLookupDigest(currentSecret);
+    }
+
+    final bothV2 = SecurityHelper.isV2PhcHash(updatedPwHash) && SecurityHelper.isV2PhcHash(updatedPinHash);
     final updated = me.copyWith(
-      passwordSalt: newSalt,
+      passwordSalt: updatedPwSalt,
       passwordHash: updatedPwHash,
+      pinSalt: updatedPinSalt,
       pinHash: updatedPinHash,
+      pinLookupHash: updatedLookup,
+      hashVersion: bothV2 ? SecurityHelper.hashVersionV2Pbkdf2 : me.hashVersion,
+      failedPinCount: 0,
+      clearPinLockedUntil: true,
       pin: '',
     );
 
@@ -269,15 +356,33 @@ class AuthProvider extends ChangeNotifier {
     if (cleanPin.isNotEmpty && (cleanPin.length < 4 || cleanPin.length > 6)) {
       return 'PIN baru harus 4 sampai 6 digit.';
     }
+    final targetPinPlain = cleanPin.isNotEmpty ? cleanPin : newPassword.trim();
+    if (cleanPin.isNotEmpty) {
+      final inUse = await DatabaseHelper.instance.isPinAlreadyInUse(cleanPin, excludeUserId: target.id);
+      if (inUse) {
+        return 'PIN baru sudah dipakai oleh karyawan lain.';
+      }
+    }
 
-    final salt = SecurityHelper.generateSalt();
-    final pwHash = SecurityHelper.hashSecret(newPassword.trim(), salt);
-    final pinHash = SecurityHelper.hashSecret(cleanPin.isNotEmpty ? cleanPin : newPassword.trim(), salt);
+    final pwPair = await SecurityHelper.hashSecretV2(
+      newPassword.trim(),
+      domain: SecurityHelper.domainPassword,
+    );
+    final pinPair = await SecurityHelper.hashSecretV2(
+      targetPinPlain,
+      domain: SecurityHelper.domainPin,
+    );
+    final lookup = await SecurityHelper.computePinLookupDigest(targetPinPlain);
 
     final updated = target.copyWith(
-      passwordSalt: salt,
-      passwordHash: pwHash,
-      pinHash: pinHash,
+      passwordSalt: pwPair.salt,
+      passwordHash: pwPair.hash,
+      pinSalt: pinPair.salt,
+      pinHash: pinPair.hash,
+      pinLookupHash: lookup,
+      hashVersion: SecurityHelper.hashVersionV2Pbkdf2,
+      failedPinCount: 0,
+      clearPinLockedUntil: true,
       pin: '',
     );
     await DatabaseHelper.instance.updateUser(updated);

@@ -46,3 +46,18 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+
+# Secrets, Keystores, Certificates & Local Databases
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+backups/
+key.properties

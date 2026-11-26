@@ -26,7 +26,11 @@ class _ShiftScreenState extends State<ShiftScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Provider.of<CashFlowProvider>(context, listen: false).checkOpenShift();
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      Provider.of<CashFlowProvider>(context, listen: false).checkOpenShift(
+        cashierId: auth.currentUser?.id,
+        terminalId: 'ADMIN',
+      );
     });
   }
 
@@ -212,6 +216,10 @@ class _ShiftScreenState extends State<ShiftScreen> {
                         ),
                         const SizedBox(height: 8),
                         Text('Kasir: ${shift.cashierName}', style: const TextStyle(fontSize: 13)),
+                        Text(
+                          'Laci Kas: #${shift.cashRegisterId} • Terminal: ${shift.terminalId} • Mode: ${shift.drawerMode}',
+                          style: const TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                        ),
                         Text('Mulai: ${DateHelper.formatFull(shift.startTime)}',
                             style: const TextStyle(fontSize: 12, color: AppTheme.textMuted)),
                         const Divider(height: 20),

@@ -1,12 +1,14 @@
 class CashFlowModel {
   final int? id;
   final int? shiftId;
+  final String terminalId;
+  final int cashRegisterId;
   final String type; // 'in' | 'out' | 'transfer'
   final String category;
   final double amount;
   final String paymentMethod; // 'tunai' | 'transfer' | 'qris'
   final String accountName; // 'Laci Kasir' | 'Rekening Bank' | 'Kas Toko'
-  final String sourceType; // 'manual' | 'shift_open' | 'penjualan' | 'pembelian' | 'kasbon_bayar' | 'utang_supplier_bayar' | 'retur' | 'servis' | 'transfer_akun'
+  final String sourceType; // 'manual' | 'shift_open' | 'penjualan' | 'pembelian' | 'kasbon_bayar' | 'utang_supplier_bayar' | 'retur' | 'servis' | 'transfer_akun' | 'void_reversal'
   final String sourceId;
   final bool isInternalTransfer;
   final String note;
@@ -16,6 +18,8 @@ class CashFlowModel {
   CashFlowModel({
     this.id,
     this.shiftId,
+    this.terminalId = 'ADMIN',
+    this.cashRegisterId = 1,
     required this.type,
     required this.category,
     required this.amount,
@@ -36,6 +40,8 @@ class CashFlowModel {
     return {
       if (id != null) 'id': id,
       'shift_id': shiftId,
+      'terminal_id': terminalId,
+      'cash_register_id': cashRegisterId,
       'type': type,
       'category': category,
       'amount': amount,
@@ -51,9 +57,12 @@ class CashFlowModel {
   }
 
   factory CashFlowModel.fromMap(Map<String, dynamic> map) {
+    final rawTerm = (map['terminal_id'] ?? '').toString().trim();
     return CashFlowModel(
       id: map['id'] as int?,
       shiftId: map['shift_id'] as int?,
+      terminalId: rawTerm.isNotEmpty ? rawTerm : 'ADMIN',
+      cashRegisterId: (map['cash_register_id'] as num?)?.toInt() ?? 1,
       type: map['type'],
       category: map['category'] ?? 'Operasional',
       amount: (map['amount'] as num).toDouble(),

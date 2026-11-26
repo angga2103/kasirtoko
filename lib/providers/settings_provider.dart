@@ -1,8 +1,10 @@
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import '../database/db_helper.dart';
+import '../models/cash_register.dart';
 import '../models/receipt_config.dart';
 import '../models/store_profile.dart';
+import '../models/user.dart';
 import '../utils/currency_format.dart';
 
 class SettingsProvider extends ChangeNotifier {
@@ -26,6 +28,9 @@ class SettingsProvider extends ChangeNotifier {
   String _printerPaperSize = '58mm';
   String _shiftStartHour = '08:00';
   ReceiptConfigModel _receiptConfig = const ReceiptConfigModel();
+  String _drawerMode = DrawerMode.sharedDrawer;
+  List<CashRegisterModel> _cashRegisters = [];
+  List<CashRegisterAssignmentModel> _assignments = [];
 
   String get storeName => _storeName;
   String get storeAddress => _storeAddress;
@@ -47,6 +52,9 @@ class SettingsProvider extends ChangeNotifier {
   String get printerPaperSize => _receiptConfig.paperSize.isNotEmpty ? _receiptConfig.paperSize : _printerPaperSize;
   String get shiftStartHour => _shiftStartHour;
   ReceiptConfigModel get receiptConfig => _receiptConfig;
+  String get drawerMode => _drawerMode;
+  List<CashRegisterModel> get cashRegisters => _cashRegisters;
+  List<CashRegisterAssignmentModel> get assignments => _assignments;
 
   Future<void> loadSettings() async {
     final settings = await DatabaseHelper.instance.getAllSettings();
@@ -69,6 +77,7 @@ class SettingsProvider extends ChangeNotifier {
     _receiptFooter = settings['receipt_footer'] ?? _receiptFooter;
     _printerPaperSize = settings['printer_paper_size'] ?? _printerPaperSize;
     _shiftStartHour = settings['shift_start_hour'] ?? _shiftStartHour;
+    _drawerMode = DrawerMode.normalize(settings['drawer_mode']);
 
     final rawReceiptJson = settings['receipt_config_json'] ?? '';
     if (rawReceiptJson.isNotEmpty) {
@@ -80,7 +89,22 @@ class SettingsProvider extends ChangeNotifier {
       );
     }
 
+    _cashRegisters = await DatabaseHelper.instance.getCashRegisters(includeInactive: true);
+    _assignments = await DatabaseHelper.instance.getCashRegisterAssignments();
+
     CurrencyHelper.setCurrencySymbol(_currencySymbol);
+    notifyListeners();
+  }
+
+  Future<void> refreshRegistersAndAssignments() async {
+    _cashRegisters = await DatabaseHelper.instance.getCashRegisters(includeInactive: true);
+    _assignments = await DatabaseHelper.instance.getCashRegisterAssignments();
+    notifyListeners();
+  }
+
+  Future<void> updateDrawerMode(String mode, {UserModel? actor}) async {
+    await DatabaseHelper.instance.setDrawerMode(mode, actor: actor);
+    _drawerMode = DrawerMode.normalize(mode);
     notifyListeners();
   }
 

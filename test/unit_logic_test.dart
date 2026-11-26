@@ -269,9 +269,9 @@ void main() {
       expect(p1 == p2, isFalse);
     });
 
-    test('UserModel enforces 7 roles, 15 granular permissions, and owner override', () {
+    test('UserModel enforces 7 roles, 16 granular permissions, and owner override', () {
       expect(AppRoles.all.length, 7);
-      expect(AppPermissions.labels.length, 15);
+      expect(AppPermissions.labels.length, 16);
 
       final owner = UserModel(name: 'Owner', role: AppRoles.owner);
       for (final key in AppPermissions.labels.keys) {

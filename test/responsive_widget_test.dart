@@ -116,7 +116,11 @@ class FakeCashFlowProvider extends CashFlowProvider {
   bool get isShiftOpen => true;
 
   @override
-  Future<void> checkOpenShift() async {}
+  Future<void> checkOpenShift({
+    int? cashierId,
+    String? terminalId,
+    int? cashRegisterId,
+  }) async {}
 }
 
 class FakePrinterProvider extends PrinterProvider {

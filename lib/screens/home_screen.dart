@@ -64,9 +64,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _refreshAll() async {
     if (!mounted) return;
+    final auth = Provider.of<AuthProvider>(context, listen: false);
     await Future.wait([
       Provider.of<ProductProvider>(context, listen: false).loadProducts(),
-      Provider.of<CashFlowProvider>(context, listen: false).checkOpenShift(),
+      Provider.of<CashFlowProvider>(context, listen: false).checkOpenShift(
+        cashierId: auth.currentUser?.id,
+        terminalId: 'ADMIN',
+      ),
       Provider.of<DebtProvider>(context, listen: false).loadDebts(),
       Provider.of<SettingsProvider>(context, listen: false).loadSettings(),
       Provider.of<ServiceOrderProvider>(context, listen: false).loadOrders(),

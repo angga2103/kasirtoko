@@ -70,7 +70,7 @@ class _LoginScreenState extends State<LoginScreen> {
       );
     } else {
       setState(() {
-        _errorMessage = 'PIN tidak sesuai atau akun sedang dinonaktifkan.';
+        _errorMessage = auth.lastAuthError ?? 'PIN tidak sesuai atau akun sedang dinonaktifkan.';
         _pin = '';
       });
     }
@@ -94,7 +94,7 @@ class _LoginScreenState extends State<LoginScreen> {
         MaterialPageRoute(builder: (_) => const HomeScreen()),
       );
     } else {
-      setState(() => _errorMessage = 'Username atau password salah.');
+      setState(() => _errorMessage = auth.lastAuthError ?? 'Username atau password salah.');
     }
   }
 

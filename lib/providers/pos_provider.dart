@@ -466,6 +466,9 @@ class PosProvider extends ChangeNotifier {
     required String cashierName,
     String? customInvoiceNumber,
     int? activeShiftId,
+    String terminalId = 'ADMIN',
+    int? cashRegisterId,
+    String? idempotencyKey,
     String note = '',
     String storeName = '',
     String storeAddress = '',
@@ -504,6 +507,9 @@ class PosProvider extends ChangeNotifier {
         date: now,
         cashierId: cashierId,
         cashierName: cashierName,
+        terminalId: terminalId,
+        cashRegisterId: cashRegisterId ?? 1,
+        idempotencyKey: idempotencyKey,
         customerId: _customerId,
         shiftId: activeShiftId,
         customerName: _customerName,
@@ -527,6 +533,8 @@ class PosProvider extends ChangeNotifier {
       final insertedId = await DatabaseHelper.instance.insertTransaction(
         transaction,
         shiftId: activeShiftId,
+        terminalId: terminalId,
+        cashRegisterId: cashRegisterId,
       );
 
       final savedTrx = TransactionModel(
@@ -535,6 +543,9 @@ class PosProvider extends ChangeNotifier {
         date: transaction.date,
         cashierId: transaction.cashierId,
         cashierName: transaction.cashierName,
+        terminalId: transaction.terminalId,
+        cashRegisterId: transaction.cashRegisterId,
+        idempotencyKey: transaction.idempotencyKey,
         customerId: transaction.customerId,
         shiftId: transaction.shiftId,
         customerName: transaction.customerName,
@@ -545,6 +556,7 @@ class PosProvider extends ChangeNotifier {
         promoName: transaction.promoName,
         grandTotal: transaction.grandTotal,
         paymentMethod: transaction.paymentMethod,
+        creditUsed: transaction.creditUsed,
         amountPaid: transaction.amountPaid,
         changeAmount: transaction.changeAmount,
         status: transaction.status,

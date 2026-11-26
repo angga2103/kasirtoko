@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../database/db_helper.dart';
+import '../../models/cash_register.dart';
 import '../../models/store_profile.dart';
 import '../../models/user.dart';
 import '../../providers/auth_provider.dart';
@@ -13,6 +15,7 @@ import '../../providers/settings_provider.dart';
 import '../../services/backup_service.dart';
 import '../../services/image_media_service.dart';
 import '../../services/printer/printer_manager.dart';
+import '../../services/server_lifecycle_bridge.dart';
 import '../../utils/app_theme.dart';
 import '../../widgets/image_picker_cropper.dart';
 import '../employees/employee_management_screen.dart';
@@ -46,6 +49,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late String _paperSize;
   late String _logoPath;
   bool _taxEnabled = false;
+  ServerLifecycleStatus _fgsStatus = const ServerLifecycleStatus();
 
   @override
   void initState() {
@@ -69,6 +73,214 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _paperSize = s.printerPaperSize;
     _logoPath = s.logoPath;
     _taxEnabled = s.taxEnabled;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadFgsStatus());
+  }
+
+  Future<void> _loadFgsStatus() async {
+    final status = await ServerLifecycleBridge.getStatus();
+    if (mounted) {
+      setState(() => _fgsStatus = status);
+    }
+  }
+
+  Future<void> _showCashRegisterManagerDialog() async {
+    final settingsProv = Provider.of<SettingsProvider>(context, listen: false);
+    final authProv = Provider.of<AuthProvider>(context, listen: false);
+    await settingsProv.refreshRegistersAndAssignments();
+    if (!mounted) return;
+
+    final codeCtrl = TextEditingController(text: 'REG-02');
+    final nameCtrl = TextEditingController(text: 'Laci Kasir Staff 1');
+    final termCtrl = TextEditingController(text: 'STAFF-01');
+    final prioCtrl = TextEditingController(text: '10');
+    int? selectedRegId = settingsProv.cashRegisters.isNotEmpty ? settingsProv.cashRegisters.first.id : 1;
+    int? selectedCashierId;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (dCtx, setDState) {
+          final regs = settingsProv.cashRegisters;
+          final assigns = settingsProv.assignments;
+          final users = authProv.activeUsers;
+          return AlertDialog(
+            title: const Text('Kelola Laci Kas & Penugasan'),
+            content: SizedBox(
+              width: 520,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Daftar Laci Kas Terdaftar', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    const SizedBox(height: 6),
+                    ...regs.map(
+                      (r) => ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.point_of_sale_rounded,
+                            color: r.isActive ? AppTheme.primaryGreen : AppTheme.textMuted),
+                        title: Text('${r.registerCode} — ${r.name}'),
+                        subtitle: Text(r.isShared ? 'Mode: Shared Drawer' : 'Mode: Individual Drawer'),
+                      ),
+                    ),
+                    const Divider(),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: codeCtrl,
+                            decoration: const InputDecoration(labelText: 'Kode Laci (cth: REG-02)'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: 2,
+                          child: TextField(
+                            controller: nameCtrl,
+                            decoration: const InputDecoration(labelText: 'Nama Laci Kas'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: () async {
+                            final code = codeCtrl.text.trim().toUpperCase();
+                            final name = nameCtrl.text.trim();
+                            if (code.isEmpty || name.isEmpty) return;
+                            try {
+                              await DatabaseHelper.instance.insertCashRegister(
+                                CashRegisterModel(registerCode: code, name: name, isShared: false),
+                              );
+                              await settingsProv.refreshRegistersAndAssignments();
+                              setDState(() {
+                                selectedRegId = settingsProv.cashRegisters.last.id;
+                              });
+                            } catch (e) {
+                              if (dCtx.mounted) {
+                                ScaffoldMessenger.of(dCtx).showSnackBar(
+                                  SnackBar(content: Text('$e'), backgroundColor: AppTheme.accentRed),
+                                );
+                              }
+                            }
+                          },
+                          child: const Text('Tambah'),
+                        ),
+                      ],
+                    ),
+                    const Divider(height: 24),
+                    const Text('Aturan Assignment (terminal+kasir > kasir > terminal)',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    const SizedBox(height: 6),
+                    if (assigns.isEmpty)
+                      const Text('Belum ada assignment khusus (menggunakan REG-MAIN pada mode SHARED_DRAWER).',
+                          style: TextStyle(fontSize: 12, color: AppTheme.textMuted))
+                    else
+                      ...assigns.map(
+                        (a) => ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(
+                            'Laci #${a.cashRegisterId} • Term: ${a.terminalId ?? "*"} • Kasir: ${a.cashierId ?? "*"}',
+                          ),
+                          subtitle: Text('Prioritas: ${a.priority} • Rank: ${a.specificityRank}'),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.delete_outline, color: AppTheme.accentRed, size: 18),
+                            onPressed: () async {
+                              if (a.id == null) return;
+                              await DatabaseHelper.instance.deleteCashRegisterAssignment(a.id!);
+                              await settingsProv.refreshRegistersAndAssignments();
+                              setDState(() {});
+                            },
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<int>(
+                      initialValue: selectedRegId,
+                      decoration: const InputDecoration(labelText: 'Pilih Laci Kas'),
+                      items: regs
+                          .map((r) => DropdownMenuItem(value: r.id, child: Text('${r.registerCode} (${r.name})')))
+                          .toList(),
+                      onChanged: (v) => setDState(() => selectedRegId = v),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: termCtrl,
+                            decoration: const InputDecoration(labelText: 'Terminal ID (opsional)'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: DropdownButtonFormField<int?>(
+                            initialValue: selectedCashierId,
+                            decoration: const InputDecoration(labelText: 'Kasir (opsional)'),
+                            items: [
+                              const DropdownMenuItem<int?>(value: null, child: Text('Semua Kasir (*)')),
+                              ...users.map((u) => DropdownMenuItem<int?>(value: u.id, child: Text(u.name))),
+                            ],
+                            onChanged: (v) => setDState(() => selectedCashierId = v),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: prioCtrl,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(labelText: 'Prioritas Angka'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: () async {
+                            if (selectedRegId == null) return;
+                            try {
+                              await DatabaseHelper.instance.saveCashRegisterAssignment(
+                                CashRegisterAssignmentModel(
+                                  cashRegisterId: selectedRegId!,
+                                  terminalId: termCtrl.text.trim().isEmpty ? null : termCtrl.text.trim(),
+                                  cashierId: selectedCashierId,
+                                  priority: int.tryParse(prioCtrl.text.trim()) ?? 0,
+                                  assignedBy: authProv.currentUser?.name ?? 'Admin',
+                                ),
+                                actor: authProv.currentUser,
+                              );
+                              await settingsProv.refreshRegistersAndAssignments();
+                              setDState(() {});
+                            } catch (e) {
+                              if (dCtx.mounted) {
+                                ScaffoldMessenger.of(dCtx).showSnackBar(
+                                  SnackBar(content: Text('$e'), backgroundColor: AppTheme.accentRed),
+                                );
+                              }
+                            }
+                          },
+                          child: const Text('Simpan Assignment'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Tutup')),
+            ],
+          );
+        },
+      ),
+    ).whenComplete(() {
+      codeCtrl.dispose();
+      nameCtrl.dispose();
+      termCtrl.dispose();
+      prioCtrl.dispose();
+    });
   }
 
   @override
@@ -455,6 +667,96 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                       ),
                     ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Fondasi Multi-Device, Laci Kas & Foreground Service (Tahap 1)
+                Consumer<SettingsProvider>(
+                  builder: (_, sProv, _) => Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: AppTheme.cardDecoration(),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Fondasi Multi-Device, Laci Kas & Android Service',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'Tentukan mode shift/laci kas (Shared vs Individual) dan kelola penugasan laci kas. Server LAN aktif akan diaktifkan pada Tahap 2.',
+                          style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                        ),
+                        const SizedBox(height: 12),
+                        DropdownButtonFormField<String>(
+                          initialValue: sProv.drawerMode,
+                          decoration: const InputDecoration(
+                            labelText: 'Mode Operasional Laci Kas',
+                            prefixIcon: Icon(Icons.point_of_sale_rounded),
+                          ),
+                          items: DrawerMode.all
+                              .map((m) => DropdownMenuItem(value: m, child: Text(DrawerMode.label(m))))
+                              .toList(),
+                          onChanged: (val) async {
+                            if (val == null || val == sProv.drawerMode) return;
+                            try {
+                              await sProv.updateDrawerMode(val, actor: auth.currentUser);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Mode laci kas diubah ke $val'),
+                                    backgroundColor: AppTheme.success,
+                                  ),
+                                );
+                              }
+                            } catch (e) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(e.toString().replaceFirst('Bad state: ', '')),
+                                    backgroundColor: AppTheme.accentRed,
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 8,
+                          children: [
+                            OutlinedButton.icon(
+                              icon: const Icon(Icons.assignment_ind_rounded),
+                              label: Text('Kelola Laci & Assignment (${sProv.cashRegisters.length})'),
+                              onPressed: _showCashRegisterManagerDialog,
+                            ),
+                            OutlinedButton.icon(
+                              icon: Icon(
+                                _fgsStatus.isRunning ? Icons.check_circle_outline : Icons.layers_outlined,
+                                color: _fgsStatus.isRunning ? AppTheme.success : AppTheme.primaryGreen,
+                              ),
+                              label: Text(
+                                _fgsStatus.isRunning
+                                    ? 'FGS Shell Aktif (${_fgsStatus.ipSummary})'
+                                    : 'Uji FGS specialUse Shell',
+                              ),
+                              onPressed: () async {
+                                final next = _fgsStatus.isRunning
+                                    ? await ServerLifecycleBridge.stopForegroundServerShell()
+                                    : await ServerLifecycleBridge.startForegroundServerShell(
+                                        storeName: sProv.storeName,
+                                      );
+                                if (mounted) {
+                                  setState(() => _fgsStatus = next);
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
                 const SizedBox(height: 16),

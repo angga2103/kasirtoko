@@ -26,11 +26,18 @@ class AuditLogModel {
   }) : module = (module != null && module.isNotEmpty) ? module : inferModule(actionType);
 
   static String inferModule(String actionType) {
-    if (actionType.contains('login') || actionType.contains('logout') || actionType.contains('password')) {
+    if (actionType.contains('login') ||
+        actionType.contains('logout') ||
+        actionType.contains('password') ||
+        actionType.contains('pin_lockout') ||
+        actionType.contains('migrasi_kdf')) {
       return 'Autentikasi';
     }
     if (actionType.contains('karyawan')) return 'Karyawan';
-    if (actionType.contains('shift') || actionType.contains('kas') || actionType.contains('laci')) {
+    if (actionType.contains('shift') ||
+        actionType.contains('kas') ||
+        actionType.contains('laci') ||
+        actionType.contains('drawer')) {
       return 'Kas & Shift';
     }
     if (actionType.contains('pembelian') || actionType.contains('supplier')) return 'Pembelian & Supplier';
@@ -51,6 +58,12 @@ class AuditLogModel {
     switch (actionType) {
       case 'login':
         return 'Login Sistem';
+      case 'login_gagal':
+        return 'Percobaan Login Gagal';
+      case 'pin_lockout':
+        return 'Kunci Sementara (Rate Limit PIN)';
+      case 'migrasi_kdf_akun':
+        return 'Upgrade KDF Kredensial (v1 ke v2)';
       case 'logout':
         return 'Logout Sistem';
       case 'ubah_password':
@@ -59,7 +72,15 @@ class AuditLogModel {
       case 'transaksi_selesai':
         return 'Transaksi Penjualan';
       case 'void_transaksi':
-        return 'Pembatalan (Void) Transaksi';
+        return 'Pembatalan (Void) / Reversal Transaksi';
+      case 'buka_shift':
+        return 'Buka Shift Kasir';
+      case 'tutup_shift':
+        return 'Tutup Shift Kasir';
+      case 'ubah_drawer_mode':
+        return 'Perubahan Mode Laci Kas';
+      case 'assign_laci_kas':
+        return 'Penugasan Laci Kas';
       case 'void_pembelian':
         return 'Pembatalan Pembelian Supplier';
       case 'pembelian_stok':

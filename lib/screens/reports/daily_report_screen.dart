@@ -257,6 +257,9 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
                         await DatabaseHelper.instance.voidTransaction(
                           t.id!,
                           shiftId: cashFlow.currentShift?.id,
+                          voidedBy: auth.currentUser?.id,
+                          voidedByName: auth.currentUser?.name,
+                          reason: 'Void melalui Pusat Analitik Bisnis',
                         );
                         await auth.logAction(
                           'void_transaksi',
@@ -265,7 +268,10 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
                           objectId: t.invoiceNumber,
                         );
                         await productProv.loadProducts();
-                        await cashFlow.checkOpenShift();
+                        await cashFlow.checkOpenShift(
+                          cashierId: auth.currentUser?.id,
+                          terminalId: cashFlow.currentShift?.terminalId ?? 'ADMIN',
+                        );
                         await _loadData();
                         if (mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
@@ -275,7 +281,10 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
                       } catch (e) {
                         if (mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('$e'), backgroundColor: AppTheme.accentRed),
+                            SnackBar(
+                              content: Text(e.toString().replaceFirst('Bad state: ', '')),
+                              backgroundColor: AppTheme.accentRed,
+                            ),
                           );
                         }
                       }

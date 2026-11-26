@@ -7,6 +7,7 @@ import 'package:sqflite/sqflite.dart';
 import '../models/attendance.dart';
 import '../models/audit_log.dart';
 import '../models/cash_flow.dart';
+import '../models/cash_register.dart';
 import '../models/customer.dart';
 import '../models/customer_credit.dart';
 import '../models/customer_debt.dart';
@@ -27,9 +28,40 @@ import '../models/stock_opname.dart';
 import '../models/tiered_price.dart';
 import '../models/transaction.dart';
 import '../models/transaction_item.dart';
+import '../models/transaction_void.dart';
 import '../models/user.dart';
 import '../models/warehouse_doc.dart';
 import '../utils/security_helper.dart';
+
+enum AuthAttemptStatus {
+  success,
+  invalidCredentials,
+  lockedOut,
+  inactive,
+}
+
+class AuthAttemptResult {
+  final AuthAttemptStatus status;
+  final UserModel? user;
+  final String message;
+  final int retryAfterSeconds;
+
+  const AuthAttemptResult({
+    required this.status,
+    this.user,
+    this.message = '',
+    this.retryAfterSeconds = 0,
+  });
+
+  bool get isSuccess => status == AuthAttemptStatus.success && user != null;
+}
+
+class _TerminalRateState {
+  int failedCount = 0;
+  DateTime? lockedUntil;
+
+  _TerminalRateState();
+}
 
 class ProductScanMatch {
   final ProductModel product;
@@ -49,9 +81,15 @@ class BarcodeConflictResult {
 }
 
 class DatabaseHelper {
+  static const int dbVersion = 5;
   static final DatabaseHelper instance = DatabaseHelper._init();
   static Database? _database;
   static String? _testDbPath;
+
+  final Map<String, _TerminalRateState> _terminalRateLimits = {};
+  static bool _autoConfiguredTestIterations = false;
+  static String? _cachedSeedSignature;
+  static List<Map<String, dynamic>>? _cachedTestSeedUsers;
 
   DatabaseHelper._init();
 
@@ -69,32 +107,152 @@ class DatabaseHelper {
     _database = null;
   }
 
+  Future<void> _onConfigure(Database db) async {
+    await db.execute('PRAGMA foreign_keys = ON');
+    await db.rawQuery('PRAGMA busy_timeout = 5000');
+    if (db.path != inMemoryDatabasePath) {
+      try {
+        await db.rawQuery('PRAGMA journal_mode = WAL');
+      } catch (_) {
+        // Ignore if runtime does not support WAL (e.g., certain virtual FS)
+      }
+    }
+  }
+
+  /// Creates and verifies a pre-migration backup before upgrading an existing on-disk DB.
+  /// Returns the verified backup path if a backup was created/verified, or null if new DB.
+  Future<String?> _prepareAndVerifyPreMigrationBackup(
+    String dbPath, {
+    required String backupFileName,
+  }) async {
+    if (dbPath == inMemoryDatabasePath) return null;
+    final dbFile = File(dbPath);
+    if (!await dbFile.exists()) return null;
+
+    // Inspect current schema version and checkpoint WAL safely before copying
+    int existingVersion = 0;
+    Database? probe;
+    try {
+      probe = await openDatabase(dbPath, singleInstance: false);
+      final verRows = await probe.rawQuery('PRAGMA user_version');
+      existingVersion = (verRows.first.values.first as num?)?.toInt() ?? 0;
+      try {
+        await probe.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
+      } catch (_) {}
+    } finally {
+      await probe?.close();
+    }
+
+    if (existingVersion >= dbVersion) {
+      return null;
+    }
+
+    final backupPath = p.join(p.dirname(dbPath), backupFileName);
+    final backupFile = File(backupPath);
+    // Refresh pre-v5 backup if upgrading from older version and not yet verified
+    await dbFile.copy(backupPath);
+
+    if (!await backupFile.exists() || await backupFile.length() <= 0) {
+      throw StateError('Backup pra-migrasi gagal dibuat ($backupPath). Migrasi dibatalkan.');
+    }
+
+    // Verify backup SQLite integrity strictly before touching live database
+    Database? checkDb;
+    try {
+      checkDb = await openReadOnlyDatabase(backupPath, singleInstance: false);
+      final checkRows = await checkDb.rawQuery('PRAGMA integrity_check');
+      final status = checkRows.isNotEmpty
+          ? (checkRows.first.values.first?.toString().toLowerCase() ?? '')
+          : '';
+      if (status != 'ok') {
+        throw StateError('Verifikasi integritas backup pra-migrasi gagal: $status');
+      }
+    } finally {
+      await checkDb?.close();
+    }
+
+    return backupPath;
+  }
+
+  Future<void> _restoreFromBackupFile(String dbPath, String backupPath) async {
+    await resetConnection();
+    for (final suffix in ['-wal', '-shm']) {
+      final sideFile = File('$dbPath$suffix');
+      if (await sideFile.exists()) {
+        try {
+          await sideFile.delete();
+        } catch (_) {}
+      }
+    }
+    final backupFile = File(backupPath);
+    if (await backupFile.exists()) {
+      await backupFile.copy(dbPath);
+    }
+  }
+
   @visibleForTesting
   Future<Database> openTestDatabase({
     String path = inMemoryDatabasePath,
     bool deleteIfExists = true,
   }) async {
     await resetConnection();
+    _terminalRateLimits.clear();
     _testDbPath = path;
+    // Host-side regression fixtures that do not explicitly test 600k iterations use fast PBKDF2 rounds
+    // to prevent 30s Dart JIT software-SHA256 timeouts across multi-hash tests. Production always runs 600,000.
+    if (!SecurityHelper.hasTestIterationOverride) {
+      // ignore: invalid_use_of_visible_for_testing_member
+      SecurityHelper.configureForTesting(iterations: SecurityHelper.testFixturePbkdf2Iterations);
+      _autoConfiguredTestIterations = true;
+    } else {
+      _autoConfiguredTestIterations = false;
+    }
     if (deleteIfExists && path != inMemoryDatabasePath) {
       try {
         final f = File(path);
         if (await f.exists()) await f.delete();
+        for (final suffix in ['-wal', '-shm']) {
+          final sf = File('$path$suffix');
+          if (await sf.exists()) await sf.delete();
+        }
       } catch (_) {}
     }
-    _database = await openDatabase(
-      path,
-      version: 4,
-      onCreate: _createDB,
-      onUpgrade: _onUpgrade,
-    );
+
+    String? verifiedPreV5Backup;
+    if (!deleteIfExists && path != inMemoryDatabasePath && await File(path).exists()) {
+      verifiedPreV5Backup = await _prepareAndVerifyPreMigrationBackup(
+        path,
+        backupFileName: '${p.basenameWithoutExtension(path)}_pre_v5_backup.db',
+      );
+    }
+
+    try {
+      _database = await openDatabase(
+        path,
+        version: dbVersion,
+        onConfigure: _onConfigure,
+        onCreate: _createDB,
+        onUpgrade: _onUpgrade,
+      );
+    } catch (e) {
+      if (verifiedPreV5Backup != null) {
+        await _restoreFromBackupFile(path, verifiedPreV5Backup);
+      }
+      rethrow;
+    }
     return _database!;
   }
 
   @visibleForTesting
   Future<void> closeTestDatabase() async {
     await resetConnection();
+    _terminalRateLimits.clear();
     _testDbPath = null;
+    if (_autoConfiguredTestIterations) {
+      // ignore: invalid_use_of_visible_for_testing_member
+      SecurityHelper.resetTestConfiguration();
+      _autoConfiguredTestIterations = false;
+    }
   }
 
   Future<Database> _initDB(String filePath) async {
@@ -103,7 +261,7 @@ class DatabaseHelper {
       final dbDir = await getApplicationDocumentsDirectory();
       path = p.join(dbDir.path, filePath);
 
-      // Pre-migration safety backups for existing databases
+      // Preserve legacy safety backups if upgrading from earlier versions
       final dbFile = File(path);
       final preV3Backup = File(p.join(dbDir.path, 'kasirtoko_pre_v3_backup.db'));
       if (await dbFile.exists() && !await preV3Backup.exists()) {
@@ -119,12 +277,33 @@ class DatabaseHelper {
       }
     }
 
-    return await openDatabase(
+    final verifiedPreV5Backup = await _prepareAndVerifyPreMigrationBackup(
       path,
-      version: 4,
-      onCreate: _createDB,
-      onUpgrade: _onUpgrade,
+      backupFileName: 'kasirtoko_pre_v5_backup.db',
     );
+
+    try {
+      return await openDatabase(
+        path,
+        version: dbVersion,
+        onConfigure: _onConfigure,
+        onCreate: _createDB,
+        onUpgrade: _onUpgrade,
+      );
+    } catch (e) {
+      if (verifiedPreV5Backup != null) {
+        await _restoreFromBackupFile(path, verifiedPreV5Backup);
+      }
+      rethrow;
+    }
+  }
+
+  Future<bool> _tableExists(DatabaseExecutor db, String table) async {
+    final rows = await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+      [table],
+    );
+    return rows.isNotEmpty;
   }
 
   Future<void> _addColumnIfMissing(
@@ -165,9 +344,9 @@ class DatabaseHelper {
         if (existingSalt.isEmpty || existingPinHash.isEmpty) {
           final salt = SecurityHelper.generateSalt();
           final pinToHash = rawPin.isNotEmpty ? rawPin : '1234';
-          final hashedPin = SecurityHelper.hashSecret(pinToHash, salt);
+          final hashedPin = SecurityHelper.hashLegacyV1Secret(pinToHash, salt);
           // Default initial password matches PIN so migrated users can log in cleanly and later update password
-          final hashedPw = SecurityHelper.hashSecret(pinToHash, salt);
+          final hashedPw = SecurityHelper.hashLegacyV1Secret(pinToHash, salt);
           final safeUsername = existingUsername.isNotEmpty
               ? existingUsername
               : '${name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '')}_$id';
@@ -306,6 +485,392 @@ class DatabaseHelper {
 
       await _createV4NewTables(db);
     }
+
+    if (oldVersion < 5) {
+      // Guard: broken/foreign databases lacking core POS tables must abort so pre-v5 backup restores cleanly
+      final hasTransactions = await _tableExists(db, 'transactions');
+      final hasShifts = await _tableExists(db, 'shifts');
+      if (!hasTransactions || !hasShifts) {
+        throw StateError('Skema pra-v5 tidak valid: tabel inti transactions/shifts tidak ditemukan.');
+      }
+
+      // Ensure auxiliary/v2-v4 tables exist even on partial test/legacy schemas
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          username TEXT,
+          password_hash TEXT NOT NULL DEFAULT '',
+          password_salt TEXT NOT NULL DEFAULT '',
+          pin TEXT NOT NULL DEFAULT '',
+          pin_hash TEXT NOT NULL DEFAULT '',
+          role TEXT NOT NULL,
+          phone TEXT NOT NULL DEFAULT '',
+          photo_path TEXT,
+          permissions_json TEXT NOT NULL DEFAULT '',
+          is_active INTEGER NOT NULL DEFAULT 1
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS cash_flows (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          shift_id INTEGER,
+          type TEXT NOT NULL,
+          category TEXT NOT NULL,
+          amount REAL NOT NULL,
+          payment_method TEXT NOT NULL DEFAULT 'tunai',
+          account_name TEXT NOT NULL DEFAULT 'Laci Kasir',
+          source_type TEXT NOT NULL DEFAULT 'manual',
+          source_id TEXT NOT NULL DEFAULT '',
+          is_internal_transfer INTEGER NOT NULL DEFAULT 0,
+          note TEXT,
+          date TEXT NOT NULL,
+          cashier_name TEXT NOT NULL
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS return_settlements (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          return_order_id INTEGER NOT NULL,
+          settlement_type TEXT NOT NULL,
+          direction TEXT NOT NULL,
+          method TEXT NOT NULL,
+          amount REAL NOT NULL,
+          account_name TEXT NOT NULL DEFAULT '',
+          reference_number TEXT NOT NULL DEFAULT '',
+          shift_id INTEGER,
+          customer_id INTEGER,
+          cash_flow_id INTEGER,
+          note TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS audit_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp TEXT NOT NULL,
+          user_id INTEGER NOT NULL,
+          user_name TEXT NOT NULL,
+          user_role TEXT NOT NULL DEFAULT '',
+          action_type TEXT NOT NULL,
+          module TEXT NOT NULL DEFAULT '',
+          object_id TEXT NOT NULL DEFAULT '',
+          before_value TEXT NOT NULL DEFAULT '',
+          after_value TEXT NOT NULL DEFAULT '',
+          details TEXT NOT NULL
+        )
+      ''');
+      await _addColumnIfMissing(db, 'audit_logs', 'user_role', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'audit_logs', 'module', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'audit_logs', 'object_id', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'audit_logs', 'before_value', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'audit_logs', 'after_value', "TEXT NOT NULL DEFAULT ''");
+
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS store_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS printers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          category TEXT NOT NULL DEFAULT 'thermal',
+          connection_type TEXT NOT NULL DEFAULT 'system',
+          address TEXT NOT NULL DEFAULT '',
+          port INTEGER NOT NULL DEFAULT 9100,
+          paper_size TEXT NOT NULL DEFAULT '58mm',
+          protocol TEXT NOT NULL DEFAULT 'pdf',
+          is_default INTEGER NOT NULL DEFAULT 0,
+          auto_cut INTEGER NOT NULL DEFAULT 1,
+          open_drawer INTEGER NOT NULL DEFAULT 1
+        )
+      ''');
+
+      // Non-destructive v5 upgrade: KDF v2 credential metadata, multi-register/shift, idempotency & void settlement
+      await _addColumnIfMissing(db, 'users', 'pin_salt', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'users', 'hash_version', "TEXT NOT NULL DEFAULT 'legacy_v1'");
+      await _addColumnIfMissing(db, 'users', 'pin_lookup_hash', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'users', 'failed_pin_count', 'INTEGER NOT NULL DEFAULT 0');
+      await _addColumnIfMissing(db, 'users', 'pin_locked_until', 'TEXT');
+
+      await db.rawUpdate('''
+        UPDATE users
+        SET hash_version = CASE
+          WHEN pin_hash LIKE '\$pbkdf2-sha256\$%' OR password_hash LIKE '\$pbkdf2-sha256\$%'
+            THEN '${SecurityHelper.hashVersionV2Pbkdf2}'
+          ELSE '${SecurityHelper.hashVersionLegacyV1}'
+        END
+        WHERE hash_version IS NULL OR hash_version = ''
+      ''');
+
+      await _addColumnIfMissing(db, 'transactions', 'terminal_id', "TEXT NOT NULL DEFAULT 'ADMIN'");
+      await _addColumnIfMissing(db, 'transactions', 'cash_register_id', 'INTEGER NOT NULL DEFAULT 1');
+      await _addColumnIfMissing(db, 'transactions', 'idempotency_key', 'TEXT');
+
+      await db.rawUpdate(
+        "UPDATE transactions SET terminal_id = 'ADMIN' WHERE terminal_id IS NULL OR TRIM(terminal_id) = ''",
+      );
+      await db.rawUpdate(
+        'UPDATE transactions SET cash_register_id = 1 WHERE cash_register_id IS NULL OR cash_register_id <= 0',
+      );
+
+      await _addColumnIfMissing(db, 'shifts', 'terminal_id', "TEXT NOT NULL DEFAULT 'ADMIN'");
+      await _addColumnIfMissing(db, 'shifts', 'cash_register_id', 'INTEGER NOT NULL DEFAULT 1');
+      await _addColumnIfMissing(db, 'shifts', 'drawer_mode', "TEXT NOT NULL DEFAULT '${DrawerMode.sharedDrawer}'");
+
+      await db.rawUpdate(
+        "UPDATE shifts SET terminal_id = 'ADMIN' WHERE terminal_id IS NULL OR TRIM(terminal_id) = ''",
+      );
+      await db.rawUpdate(
+        'UPDATE shifts SET cash_register_id = 1 WHERE cash_register_id IS NULL OR cash_register_id <= 0',
+      );
+      await db.rawUpdate(
+        "UPDATE shifts SET drawer_mode = '${DrawerMode.sharedDrawer}' WHERE drawer_mode IS NULL OR TRIM(drawer_mode) = ''",
+      );
+
+      await _addColumnIfMissing(db, 'cash_flows', 'terminal_id', "TEXT NOT NULL DEFAULT 'ADMIN'");
+      await _addColumnIfMissing(db, 'cash_flows', 'cash_register_id', 'INTEGER NOT NULL DEFAULT 1');
+      await db.rawUpdate('''
+        UPDATE cash_flows
+        SET terminal_id = COALESCE(
+              NULLIF(TRIM(terminal_id), ''),
+              (SELECT s.terminal_id FROM shifts s WHERE s.id = cash_flows.shift_id),
+              'ADMIN'
+            ),
+            cash_register_id = COALESCE(
+              NULLIF(cash_register_id, 0),
+              (SELECT s.cash_register_id FROM shifts s WHERE s.id = cash_flows.shift_id),
+              1
+            )
+      ''');
+
+      await _addColumnIfMissing(db, 'return_settlements', 'settlement_shift_id', 'INTEGER');
+      await _addColumnIfMissing(db, 'return_settlements', 'settlement_cash_register_id', 'INTEGER');
+      await db.rawUpdate('''
+        UPDATE return_settlements
+        SET settlement_shift_id = COALESCE(settlement_shift_id, shift_id),
+            settlement_cash_register_id = COALESCE(
+              settlement_cash_register_id,
+              (SELECT s.cash_register_id FROM shifts s WHERE s.id = return_settlements.shift_id)
+            )
+        WHERE shift_id IS NOT NULL
+      ''');
+
+      await _createV5NewTables(db);
+      await _normalizePreV5OpenShifts(db);
+      await _ensureV5Indexes(db);
+
+      await db.insert(
+        'store_settings',
+        {'key': 'drawer_mode', 'value': DrawerMode.sharedDrawer},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+  }
+
+  Future<void> _normalizePreV5OpenShifts(Database db) async {
+    final openReg1 = await db.query(
+      'shifts',
+      where: "status = 'open' AND cash_register_id = 1",
+      orderBy: 'id DESC',
+    );
+    if (openReg1.length <= 1) return;
+
+    final nowIso = DateTime.now().toIso8601String();
+    // Preserve newest open shift and cleanly close stale duplicate open shifts so unique index creation succeeds
+    for (int i = 1; i < openReg1.length; i++) {
+      final stale = ShiftModel.fromMap(openReg1[i]);
+      if (stale.id == null) continue;
+      await db.update(
+        'shifts',
+        {
+          'end_time': nowIso,
+          'actual_cash': stale.expectedCash,
+          'difference': 0.0,
+          'status': 'closed',
+          'note': '${stale.note} [Auto-closed stale duplicate open shift during DB v5 migration]'.trim(),
+        },
+        where: 'id = ?',
+        whereArgs: [stale.id],
+      );
+      await db.insert('audit_logs', {
+        'timestamp': nowIso,
+        'user_id': 0,
+        'user_name': 'Sistem Migrasi v5',
+        'user_role': 'owner',
+        'action_type': 'tutup_shift',
+        'module': 'Kas & Shift',
+        'object_id': 'SHIFT-${stale.id}',
+        'before_value': 'status=open',
+        'after_value': 'status=closed',
+        'details': 'Penutupan otomatis shift duplikat lama #${stale.id} (${stale.cashierName}) saat migrasi v5',
+      });
+    }
+  }
+
+  Future<void> _createV5NewTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS cash_registers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        register_code TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        printer_id INTEGER,
+        is_shared INTEGER NOT NULL DEFAULT 0,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      )
+    ''');
+
+    int? defaultPrinterId;
+    if (await _tableExists(db, 'printers')) {
+      final defaultPrinter = await db.query('printers', where: 'is_default = 1', limit: 1);
+      defaultPrinterId = defaultPrinter.isNotEmpty ? defaultPrinter.first['id'] as int? : null;
+    }
+
+    await db.insert(
+      'cash_registers',
+      {
+        'id': 1,
+        'register_code': 'REG-MAIN',
+        'name': 'Laci Kasir Utama (Admin)',
+        'printer_id': defaultPrinterId,
+        'is_shared': 1,
+        'is_active': 1,
+        'notes': 'Laci kas default kompatibel data historis v1-v4',
+        'created_at': DateTime.now().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS cash_register_assignments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cash_register_id INTEGER NOT NULL,
+        terminal_id TEXT,
+        cashier_id INTEGER,
+        priority INTEGER NOT NULL DEFAULT 0,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        assigned_by TEXT NOT NULL DEFAULT 'Admin',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (cash_register_id) REFERENCES cash_registers (id) ON DELETE CASCADE,
+        FOREIGN KEY (cashier_id) REFERENCES users (id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS paired_terminals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        terminal_id TEXT NOT NULL UNIQUE,
+        terminal_name TEXT NOT NULL,
+        device_model TEXT NOT NULL DEFAULT '',
+        device_secret_hash TEXT NOT NULL,
+        device_token_hash TEXT NOT NULL,
+        assigned_register_id INTEGER,
+        allow_open_cash_drawer INTEGER NOT NULL DEFAULT 0,
+        is_revoked INTEGER NOT NULL DEFAULT 0,
+        paired_at TEXT NOT NULL,
+        last_seen_at TEXT,
+        FOREIGN KEY (assigned_register_id) REFERENCES cash_registers (id) ON DELETE SET NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS terminal_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_token_hash TEXT NOT NULL UNIQUE,
+        terminal_id TEXT NOT NULL,
+        cashier_id INTEGER NOT NULL,
+        shift_id INTEGER,
+        issued_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        FOREIGN KEY (terminal_id) REFERENCES paired_terminals (terminal_id) ON DELETE CASCADE,
+        FOREIGN KEY (cashier_id) REFERENCES users (id) ON DELETE CASCADE,
+        FOREIGN KEY (shift_id) REFERENCES shifts (id) ON DELETE SET NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS print_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_uuid TEXT NOT NULL UNIQUE,
+        terminal_id TEXT NOT NULL,
+        cashier_id INTEGER,
+        transaction_id INTEGER,
+        printer_id INTEGER,
+        open_drawer_requested INTEGER NOT NULL DEFAULT 0,
+        drawer_opened INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'queued',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        FOREIGN KEY (transaction_id) REFERENCES transactions (id) ON DELETE SET NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS transaction_voids (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        original_transaction_id INTEGER NOT NULL,
+        original_invoice_number TEXT NOT NULL,
+        original_shift_id INTEGER,
+        original_cash_register_id INTEGER NOT NULL DEFAULT 1,
+        void_type TEXT NOT NULL DEFAULT '${VoidTypes.postPaymentReversal}',
+        refund_method TEXT NOT NULL DEFAULT 'none',
+        refund_amount REAL NOT NULL DEFAULT 0.0,
+        credit_restored REAL NOT NULL DEFAULT 0.0,
+        voided_at TEXT NOT NULL,
+        voided_by INTEGER NOT NULL,
+        voided_by_name TEXT NOT NULL DEFAULT 'Admin',
+        void_reason TEXT NOT NULL DEFAULT '',
+        settlement_shift_id INTEGER,
+        settlement_cash_register_id INTEGER,
+        settlement_terminal_id TEXT NOT NULL DEFAULT 'ADMIN',
+        cash_flow_id INTEGER,
+        FOREIGN KEY (original_transaction_id) REFERENCES transactions (id) ON DELETE CASCADE,
+        FOREIGN KEY (settlement_shift_id) REFERENCES shifts (id) ON DELETE SET NULL,
+        FOREIGN KEY (settlement_cash_register_id) REFERENCES cash_registers (id) ON DELETE SET NULL
+      )
+    ''');
+  }
+
+  Future<void> _ensureV5Indexes(Database db) async {
+    await db.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_idempotency
+      ON transactions (idempotency_key)
+      WHERE idempotency_key IS NOT NULL AND idempotency_key != ''
+    ''');
+
+    await db.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_shifts_one_open_per_register
+      ON shifts (cash_register_id)
+      WHERE status = 'open'
+    ''');
+
+    await db.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_shifts_one_open_per_cashier_indiv
+      ON shifts (cashier_id)
+      WHERE status = 'open' AND drawer_mode = '${DrawerMode.individualDrawer}'
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_cash_register_assignments_lookup
+      ON cash_register_assignments (is_active, terminal_id, cashier_id, priority DESC)
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_users_pin_lookup
+      ON users (is_active, pin_lookup_hash)
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_transaction_voids_orig_trx
+      ON transaction_voids (original_transaction_id)
+    ''');
   }
 
   Future<void> _createV4NewTables(Database db) async {
@@ -343,6 +908,8 @@ class DatabaseHelper {
         account_name TEXT NOT NULL DEFAULT '',
         reference_number TEXT NOT NULL DEFAULT '',
         shift_id INTEGER,
+        settlement_shift_id INTEGER,
+        settlement_cash_register_id INTEGER,
         customer_id INTEGER,
         cash_flow_id INTEGER,
         note TEXT NOT NULL DEFAULT '',
@@ -588,6 +1155,11 @@ class DatabaseHelper {
         password_salt TEXT NOT NULL DEFAULT '',
         pin TEXT NOT NULL DEFAULT '',
         pin_hash TEXT NOT NULL DEFAULT '',
+        pin_salt TEXT NOT NULL DEFAULT '',
+        hash_version TEXT NOT NULL DEFAULT '${SecurityHelper.hashVersionV2Pbkdf2}',
+        pin_lookup_hash TEXT NOT NULL DEFAULT '',
+        failed_pin_count INTEGER NOT NULL DEFAULT 0,
+        pin_locked_until TEXT,
         role TEXT NOT NULL,
         phone TEXT NOT NULL DEFAULT '',
         photo_path TEXT,
@@ -663,6 +1235,9 @@ class DatabaseHelper {
         date TEXT NOT NULL,
         cashier_id INTEGER NOT NULL,
         cashier_name TEXT NOT NULL,
+        terminal_id TEXT NOT NULL DEFAULT 'ADMIN',
+        cash_register_id INTEGER NOT NULL DEFAULT 1,
+        idempotency_key TEXT,
         customer_id INTEGER,
         shift_id INTEGER,
         customer_name TEXT NOT NULL,
@@ -755,6 +1330,9 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         cashier_id INTEGER NOT NULL,
         cashier_name TEXT NOT NULL,
+        terminal_id TEXT NOT NULL DEFAULT 'ADMIN',
+        cash_register_id INTEGER NOT NULL DEFAULT 1,
+        drawer_mode TEXT NOT NULL DEFAULT '${DrawerMode.sharedDrawer}',
         start_time TEXT NOT NULL,
         end_time TEXT,
         starting_cash REAL NOT NULL,
@@ -777,6 +1355,8 @@ class DatabaseHelper {
       CREATE TABLE cash_flows (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         shift_id INTEGER,
+        terminal_id TEXT NOT NULL DEFAULT 'ADMIN',
+        cash_register_id INTEGER NOT NULL DEFAULT 1,
         type TEXT NOT NULL,
         category TEXT NOT NULL,
         amount REAL NOT NULL,
@@ -902,6 +1482,8 @@ class DatabaseHelper {
     await _createV2NewTables(db);
     await _createV3NewTables(db);
     await _createV4NewTables(db);
+    await _createV5NewTables(db);
+    await _ensureV5Indexes(db);
     await _seedInitialData(db);
   }
 
@@ -925,13 +1507,14 @@ class DatabaseHelper {
       'receipt_footer': 'Terima kasih atas kunjungan Anda!\nBarang yang sudah dibeli dapat ditukar maksimal 2 hari.',
       'printer_paper_size': '58mm',
       'shift_start_hour': '08:00',
+      'drawer_mode': DrawerMode.sharedDrawer,
     };
 
     for (final entry in defaultSettings.entries) {
       await db.insert('store_settings', {'key': entry.key, 'value': entry.value});
     }
 
-    // Seed hashed default accounts
+    // Seed hashed default accounts using v2 PBKDF2-HMAC-SHA256 with separated salts
     final defaultUsers = [
       {'name': 'Pemilik Toko', 'username': 'owner', 'pin': '123456', 'role': AppRoles.owner},
       {'name': 'Supervisor Toko', 'username': 'supervisor', 'pin': '3333', 'role': AppRoles.supervisor},
@@ -940,21 +1523,51 @@ class DatabaseHelper {
       {'name': 'Teknisi Servis', 'username': 'teknisi', 'pin': '4444', 'role': AppRoles.technician},
     ];
 
-    for (final u in defaultUsers) {
-      final salt = SecurityHelper.generateSalt();
-      final pin = u['pin']!;
-      final hash = SecurityHelper.hashSecret(pin, salt);
-      final user = UserModel(
-        name: u['name']!,
-        username: u['username']!,
-        passwordHash: hash,
-        passwordSalt: salt,
-        pin: '',
-        pinHash: hash,
-        role: u['role']!,
-        isActive: true,
+    final isTestMode = _testDbPath != null;
+    final sigDigest = await SecurityHelper.computePinLookupDigest('seed_sig');
+    final seedSignature = '${SecurityHelper.activeIterations}:$sigDigest';
+
+    if (isTestMode && _cachedSeedSignature == seedSignature && _cachedTestSeedUsers != null) {
+      for (final userMap in _cachedTestSeedUsers!) {
+        await db.insert('users', Map<String, dynamic>.from(userMap));
+      }
+    } else {
+      final seededMaps = await Future.wait(
+        defaultUsers.map((u) async {
+          final pin = u['pin']!;
+          final pwPair = await SecurityHelper.hashSecretV2(
+            pin,
+            domain: SecurityHelper.domainPassword,
+          );
+          final pinPair = await SecurityHelper.hashSecretV2(
+            pin,
+            domain: SecurityHelper.domainPin,
+          );
+          final lookup = await SecurityHelper.computePinLookupDigest(pin);
+          final user = UserModel(
+            name: u['name']!,
+            username: u['username']!,
+            passwordHash: pwPair.hash,
+            passwordSalt: pwPair.salt,
+            pin: '',
+            pinHash: pinPair.hash,
+            pinSalt: pinPair.salt,
+            hashVersion: SecurityHelper.hashVersionV2Pbkdf2,
+            pinLookupHash: lookup,
+            role: u['role']!,
+            isActive: true,
+          );
+          return user.toMap();
+        }),
       );
-      await db.insert('users', user.toMap());
+
+      for (final userMap in seededMaps) {
+        await db.insert('users', userMap);
+      }
+      if (isTestMode) {
+        _cachedSeedSignature = seedSignature;
+        _cachedTestSeedUsers = seededMaps.map((m) => Map<String, dynamic>.from(m)).toList();
+      }
     }
 
     final now = DateTime.now();
@@ -1073,6 +1686,206 @@ class DatabaseHelper {
   }
 
   // ================= USERS & AUTH CRUD =================
+  static const int _lockThresholdMedium = 5;
+  static const int _lockThresholdHigh = 8;
+  static const int _lockThresholdSevere = 10;
+
+  int _lockDurationSecondsForFailures(int failCount) {
+    if (failCount >= _lockThresholdSevere) return 900; // 15 minutes
+    if (failCount >= _lockThresholdHigh) return 300; // 5 minutes
+    if (failCount >= _lockThresholdMedium) return 60; // 1 minute
+    return 0;
+  }
+
+  AuthAttemptResult? _checkTerminalRateLimit(String key, DateTime now) {
+    final state = _terminalRateLimits[key];
+    if (state?.lockedUntil != null && now.isBefore(state!.lockedUntil!)) {
+      final rem = state.lockedUntil!.difference(now).inSeconds.clamp(1, 3600);
+      return AuthAttemptResult(
+        status: AuthAttemptStatus.lockedOut,
+        retryAfterSeconds: rem,
+        message: 'Terlalu banyak percobaan gagal pada terminal ini. Coba lagi dalam $rem detik.',
+      );
+    }
+    return null;
+  }
+
+  Future<void> _recordSecurityAudit(
+    DatabaseExecutor db, {
+    required int userId,
+    required String userName,
+    required String userRole,
+    required String actionType,
+    required String objectId,
+    String beforeValue = '',
+    String afterValue = '',
+    required String details,
+  }) async {
+    await db.insert('audit_logs', {
+      'timestamp': DateTime.now().toIso8601String(),
+      'user_id': userId,
+      'user_name': userName,
+      'user_role': userRole,
+      'action_type': actionType,
+      'module': 'Keamanan & Autentikasi',
+      'object_id': objectId,
+      'before_value': beforeValue,
+      'after_value': afterValue,
+      'details': details,
+    });
+  }
+
+  Future<AuthAttemptResult> _recordFailedAuthAttempt(
+    Database db, {
+    required String terminalRateKey,
+    required String terminalId,
+    UserModel? user,
+    required String methodLabel,
+    String? attemptedUsername,
+  }) async {
+    final now = DateTime.now();
+    final state = _terminalRateLimits.putIfAbsent(terminalRateKey, () => _TerminalRateState());
+    state.failedCount += 1;
+
+    final int nextUserFail = (user?.failedPinCount ?? 0) + 1;
+    final int lockSecs = [
+      _lockDurationSecondsForFailures(state.failedCount),
+      _lockDurationSecondsForFailures(nextUserFail),
+    ].reduce((a, b) => a > b ? a : b);
+
+    final DateTime? lockUntil = lockSecs > 0 ? now.add(Duration(seconds: lockSecs)) : null;
+    if (lockUntil != null) {
+      state.lockedUntil = lockUntil;
+    }
+
+    if (user?.id != null) {
+      await db.update(
+        'users',
+        {
+          'failed_pin_count': nextUserFail,
+          if (lockUntil != null) 'pin_locked_until': lockUntil.toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [user!.id],
+      );
+    }
+
+    final actorName = user?.name ?? (attemptedUsername?.isNotEmpty == true ? attemptedUsername! : 'Tidak Dikenal');
+    final objectId = user?.id != null ? 'USER-${user!.id}' : 'TERMINAL-$terminalId';
+    await _recordSecurityAudit(
+      db,
+      userId: user?.id ?? 0,
+      userName: actorName,
+      userRole: user?.role ?? 'unknown',
+      actionType: lockUntil != null ? 'pin_lockout' : 'login_gagal',
+      objectId: objectId,
+      beforeValue: 'fail_count=${user?.failedPinCount ?? state.failedCount - 1}',
+      afterValue: 'fail_count=${user != null ? nextUserFail : state.failedCount}',
+      details: lockUntil != null
+          ? 'Akun/terminal dikunci $lockSecs detik setelah $methodLabel gagal di terminal $terminalId ($actorName).'
+          : 'Percobaan $methodLabel gagal di terminal $terminalId ($actorName).',
+    );
+
+    if (lockUntil != null) {
+      return AuthAttemptResult(
+        status: AuthAttemptStatus.lockedOut,
+        retryAfterSeconds: lockSecs,
+        message: 'Terlalu banyak percobaan gagal. Akun/terminal dikunci selama $lockSecs detik.',
+      );
+    }
+
+    return const AuthAttemptResult(
+      status: AuthAttemptStatus.invalidCredentials,
+      message: 'PIN atau username/password salah!',
+    );
+  }
+
+  Future<UserModel> _migrateUserToV2IfNeeded(
+    Database db,
+    UserModel user, {
+    String? verifiedPin,
+    String? verifiedPassword,
+  }) async {
+    if (user.id == null) return user;
+
+    String nextPinHash = user.pinHash;
+    String nextPinSalt = user.pinSalt;
+    String nextLookupHash = user.pinLookupHash;
+    String nextPwHash = user.passwordHash;
+    String nextPwSalt = user.passwordSalt;
+    bool changed = false;
+
+    if (verifiedPin != null) {
+      final pinIsV2 = SecurityHelper.isV2PhcHash(user.pinHash) &&
+          user.pinSalt.isNotEmpty &&
+          (SecurityHelper.parseV2Hash(user.pinHash)?.iterations ?? 0) >= SecurityHelper.activeIterations;
+      if (!pinIsV2 || user.pin.isNotEmpty || user.pinLookupHash.isEmpty) {
+        final pair = await SecurityHelper.hashSecretV2(
+          verifiedPin,
+          domain: SecurityHelper.domainPin,
+        );
+        nextPinHash = pair.hash;
+        nextPinSalt = pair.salt;
+        nextLookupHash = await SecurityHelper.computePinLookupDigest(verifiedPin);
+        changed = true;
+      }
+    }
+
+    if (verifiedPassword != null) {
+      final pwIsV2 = SecurityHelper.isV2PhcHash(user.passwordHash) &&
+          user.passwordSalt.isNotEmpty &&
+          (SecurityHelper.parseV2Hash(user.passwordHash)?.iterations ?? 0) >= SecurityHelper.activeIterations;
+      if (!pwIsV2) {
+        final pair = await SecurityHelper.hashSecretV2(
+          verifiedPassword,
+          domain: SecurityHelper.domainPassword,
+        );
+        nextPwHash = pair.hash;
+        nextPwSalt = pair.salt;
+        changed = true;
+      }
+    }
+
+    final bothV2 = SecurityHelper.isV2PhcHash(nextPinHash) && SecurityHelper.isV2PhcHash(nextPwHash);
+    final nextVersion = bothV2
+        ? SecurityHelper.hashVersionV2Pbkdf2
+        : (user.hashVersion.isNotEmpty ? user.hashVersion : SecurityHelper.hashVersionLegacyV1);
+
+    final updates = <String, dynamic>{
+      'failed_pin_count': 0,
+      'pin_locked_until': null,
+    };
+
+    if (changed) {
+      updates['pin'] = '';
+      updates['pin_hash'] = nextPinHash;
+      updates['pin_salt'] = nextPinSalt;
+      updates['pin_lookup_hash'] = nextLookupHash;
+      updates['password_hash'] = nextPwHash;
+      updates['password_salt'] = nextPwSalt;
+      updates['hash_version'] = nextVersion;
+    }
+
+    await db.update('users', updates, where: 'id = ?', whereArgs: [user.id]);
+
+    if (changed) {
+      await _recordSecurityAudit(
+        db,
+        userId: user.id!,
+        userName: user.name,
+        userRole: user.role,
+        actionType: 'migrasi_kdf_akun',
+        objectId: 'USER-${user.id}',
+        beforeValue: 'hash_version=${user.hashVersion}',
+        afterValue: 'hash_version=$nextVersion, has_pin_salt=${nextPinSalt.isNotEmpty}',
+        details: 'Migrasi transparan kredensial ${user.name} ke PBKDF2-HMAC-SHA256 v2 (salt terpisah & Keystore pepper).',
+      );
+    }
+
+    final refreshed = await db.query('users', where: 'id = ?', whereArgs: [user.id], limit: 1);
+    return refreshed.isNotEmpty ? UserModel.fromMap(refreshed.first) : user;
+  }
+
   Future<List<UserModel>> getUsers({bool includeInactive = false}) async {
     final db = await database;
     final res = includeInactive
@@ -1081,39 +1894,245 @@ class DatabaseHelper {
     return res.map((e) => UserModel.fromMap(e)).toList();
   }
 
-  Future<UserModel?> loginWithPin(String pin) async {
+  Future<bool> isPinAlreadyInUse(String pin, {int? excludeUserId}) async {
+    final clean = pin.trim();
+    if (clean.isEmpty) return false;
     final db = await database;
-    final res = await db.query('users', where: 'is_active = ?', whereArgs: [1]);
-    for (final map in res) {
-      final user = UserModel.fromMap(map);
-      if (user.pinHash.isNotEmpty && user.passwordSalt.isNotEmpty) {
-        if (SecurityHelper.verifySecret(pin, user.passwordSalt, user.pinHash)) {
-          return user;
-        }
-      } else if (user.pin.isNotEmpty && user.pin == pin) {
-        return user;
+    final lookup = await SecurityHelper.computePinLookupDigest(clean);
+    final indexed = await db.query(
+      'users',
+      where: excludeUserId != null
+          ? 'is_active = 1 AND pin_lookup_hash = ? AND id != ?'
+          : 'is_active = 1 AND pin_lookup_hash = ?',
+      whereArgs: excludeUserId != null ? [lookup, excludeUserId] : [lookup],
+    );
+    for (final row in indexed) {
+      final u = UserModel.fromMap(row);
+      final salt = u.pinSalt.isNotEmpty ? u.pinSalt : u.passwordSalt;
+      final res = await SecurityHelper.verifyCredential(
+        secret: clean,
+        storedHash: u.pinHash,
+        legacyOrV2Salt: salt,
+        expectedDomain: SecurityHelper.domainPin,
+      );
+      if (res.valid) return true;
+    }
+
+    final legacyRows = await db.query(
+      'users',
+      where: excludeUserId != null
+          ? "(is_active = 1 AND (pin_lookup_hash = '' OR pin_lookup_hash IS NULL) AND id != ?)"
+          : "(is_active = 1 AND (pin_lookup_hash = '' OR pin_lookup_hash IS NULL))",
+      whereArgs: excludeUserId != null ? [excludeUserId] : null,
+    );
+    for (final row in legacyRows) {
+      final u = UserModel.fromMap(row);
+      if (u.pinHash.isNotEmpty) {
+        final salt = u.pinSalt.isNotEmpty ? u.pinSalt : u.passwordSalt;
+        final res = await SecurityHelper.verifyCredential(
+          secret: clean,
+          storedHash: u.pinHash,
+          legacyOrV2Salt: salt,
+          expectedDomain: SecurityHelper.domainPin,
+        );
+        if (res.valid) return true;
+      } else if (u.pin.isNotEmpty && SecurityHelper.constantTimeEquals(u.pin, clean)) {
+        return true;
       }
     }
-    return null;
+    return false;
   }
 
-  Future<UserModel?> loginWithPassword(String username, String password) async {
+  Future<AuthAttemptResult> authenticateWithPin(
+    String pin, {
+    int? userId,
+    String terminalId = 'ADMIN',
+  }) async {
     final db = await database;
-    final cleanUser = username.trim().toLowerCase();
-    final res = await db.query(
-      'users',
-      where: 'LOWER(username) = ? AND is_active = ?',
-      whereArgs: [cleanUser, 1],
-      limit: 1,
-    );
-    if (res.isEmpty) return null;
-    final user = UserModel.fromMap(res.first);
-    if (user.passwordHash.isNotEmpty && user.passwordSalt.isNotEmpty) {
-      if (SecurityHelper.verifySecret(password, user.passwordSalt, user.passwordHash)) {
-        return user;
+    final now = DateTime.now();
+    final cleanPin = pin.trim();
+    final cleanTerm = terminalId.trim().isNotEmpty ? terminalId.trim() : 'ADMIN';
+    final termRateKey = userId != null ? 'pin:$cleanTerm:uid:$userId' : 'pin:$cleanTerm';
+
+    final termLock = _checkTerminalRateLimit(termRateKey, now);
+    if (termLock != null) return termLock;
+
+    if (cleanPin.isEmpty) {
+      return await _recordFailedAuthAttempt(
+        db,
+        terminalRateKey: termRateKey,
+        terminalId: cleanTerm,
+        methodLabel: 'login PIN (kosong)',
+      );
+    }
+
+    UserModel? targetedUser;
+    final List<Map<String, dynamic>> candidates = [];
+    if (userId != null) {
+      final rows = await db.query('users', where: 'id = ? AND is_active = 1', whereArgs: [userId], limit: 1);
+      if (rows.isEmpty) {
+        return const AuthAttemptResult(
+          status: AuthAttemptStatus.inactive,
+          message: 'Akun kasir tidak ditemukan atau tidak aktif.',
+        );
+      }
+      targetedUser = UserModel.fromMap(rows.first);
+      if (targetedUser.isPinLocked(now)) {
+        final rem = targetedUser.pinLockedUntil!.difference(now).inSeconds.clamp(1, 3600);
+        return AuthAttemptResult(
+          status: AuthAttemptStatus.lockedOut,
+          retryAfterSeconds: rem,
+          message: 'Akun "${targetedUser.name}" sedang terkunci. Coba lagi dalam $rem detik.',
+        );
+      }
+      candidates.add(rows.first);
+    } else {
+      final lookup = await SecurityHelper.computePinLookupDigest(cleanPin);
+      final fastRows = await db.query(
+        'users',
+        where: 'is_active = 1 AND pin_lookup_hash = ?',
+        whereArgs: [lookup],
+      );
+      candidates.addAll(fastRows);
+      // Fallback scan ONLY for non-v2 or unindexed legacy rows (never penalizes v2 miss with O(N)*600k cost)
+      final legacyRows = await db.query(
+        'users',
+        where:
+            "is_active = 1 AND (pin_lookup_hash = '' OR pin_lookup_hash IS NULL OR hash_version != ?)",
+        whereArgs: [SecurityHelper.hashVersionV2Pbkdf2],
+      );
+      for (final r in legacyRows) {
+        if (!candidates.any((c) => c['id'] == r['id'])) {
+          candidates.add(r);
+        }
       }
     }
-    return null;
+
+    for (final map in candidates) {
+      final user = UserModel.fromMap(map);
+      if (user.isPinLocked(now)) continue;
+
+      bool matched = false;
+      if (user.pinHash.isNotEmpty) {
+        final effectiveSalt = user.pinSalt.isNotEmpty ? user.pinSalt : user.passwordSalt;
+        if (effectiveSalt.isNotEmpty || SecurityHelper.isV2PhcHash(user.pinHash)) {
+          final res = await SecurityHelper.verifyCredential(
+            secret: cleanPin,
+            storedHash: user.pinHash,
+            legacyOrV2Salt: effectiveSalt,
+            expectedDomain: SecurityHelper.domainPin,
+          );
+          matched = res.valid;
+        }
+      } else if (user.pin.isNotEmpty && SecurityHelper.constantTimeEquals(user.pin, cleanPin)) {
+        matched = true;
+      }
+
+      if (matched) {
+        _terminalRateLimits.remove(termRateKey);
+        final upgraded = await _migrateUserToV2IfNeeded(db, user, verifiedPin: cleanPin);
+        return AuthAttemptResult(
+          status: AuthAttemptStatus.success,
+          user: upgraded,
+        );
+      }
+    }
+
+    return await _recordFailedAuthAttempt(
+      db,
+      terminalRateKey: termRateKey,
+      terminalId: cleanTerm,
+      user: targetedUser,
+      methodLabel: 'login PIN',
+    );
+  }
+
+  Future<AuthAttemptResult> authenticateWithPassword(
+    String username,
+    String password, {
+    String terminalId = 'ADMIN',
+  }) async {
+    final db = await database;
+    final now = DateTime.now();
+    final cleanUser = username.trim().toLowerCase();
+    final cleanTerm = terminalId.trim().isNotEmpty ? terminalId.trim() : 'ADMIN';
+    final termRateKey = 'pw:$cleanTerm:$cleanUser';
+
+    final termLock = _checkTerminalRateLimit(termRateKey, now);
+    if (termLock != null) return termLock;
+
+    final rows = await db.query(
+      'users',
+      where: 'LOWER(username) = ?',
+      whereArgs: [cleanUser],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      return await _recordFailedAuthAttempt(
+        db,
+        terminalRateKey: termRateKey,
+        terminalId: cleanTerm,
+        methodLabel: 'login password',
+        attemptedUsername: cleanUser,
+      );
+    }
+
+    final user = UserModel.fromMap(rows.first);
+    if (!user.isActive) {
+      return const AuthAttemptResult(
+        status: AuthAttemptStatus.inactive,
+        message: 'Akun ini telah dinonaktifkan oleh Owner.',
+      );
+    }
+    if (user.isPinLocked(now)) {
+      final rem = user.pinLockedUntil!.difference(now).inSeconds.clamp(1, 3600);
+      return AuthAttemptResult(
+        status: AuthAttemptStatus.lockedOut,
+        retryAfterSeconds: rem,
+        message: 'Akun "${user.name}" sedang terkunci. Coba lagi dalam $rem detik.',
+      );
+    }
+
+    if (user.passwordHash.isNotEmpty &&
+        (user.passwordSalt.isNotEmpty || SecurityHelper.isV2PhcHash(user.passwordHash))) {
+      final res = await SecurityHelper.verifyCredential(
+        secret: password,
+        storedHash: user.passwordHash,
+        legacyOrV2Salt: user.passwordSalt,
+        expectedDomain: SecurityHelper.domainPassword,
+      );
+      if (res.valid) {
+        _terminalRateLimits.remove(termRateKey);
+        final upgraded = await _migrateUserToV2IfNeeded(db, user, verifiedPassword: password);
+        return AuthAttemptResult(
+          status: AuthAttemptStatus.success,
+          user: upgraded,
+        );
+      }
+    }
+
+    return await _recordFailedAuthAttempt(
+      db,
+      terminalRateKey: termRateKey,
+      terminalId: cleanTerm,
+      user: user,
+      methodLabel: 'login password',
+      attemptedUsername: cleanUser,
+    );
+  }
+
+  Future<UserModel?> loginWithPin(String pin, {int? userId, String terminalId = 'ADMIN'}) async {
+    final res = await authenticateWithPin(pin, userId: userId, terminalId: terminalId);
+    return res.user;
+  }
+
+  Future<UserModel?> loginWithPassword(
+    String username,
+    String password, {
+    String terminalId = 'ADMIN',
+  }) async {
+    final res = await authenticateWithPassword(username, password, terminalId: terminalId);
+    return res.user;
   }
 
   Future<UserModel?> login(String pin) => loginWithPin(pin);
@@ -1140,6 +2159,270 @@ class DatabaseHelper {
       {'is_active': isActive ? 1 : 0},
       where: 'id = ?',
       whereArgs: [userId],
+    );
+  }
+
+  // ================= CASH REGISTERS & ASSIGNMENTS =================
+  Future<String> _getDrawerModeTxn(DatabaseExecutor db) async {
+    final res = await db.query(
+      'store_settings',
+      where: 'key = ?',
+      whereArgs: ['drawer_mode'],
+      limit: 1,
+    );
+    if (res.isEmpty) return DrawerMode.sharedDrawer;
+    return DrawerMode.normalize(res.first['value']?.toString());
+  }
+
+  Future<String> getDrawerMode() async {
+    final db = await database;
+    return await _getDrawerModeTxn(db);
+  }
+
+  Future<void> setDrawerMode(String mode, {UserModel? actor}) async {
+    final normalized = DrawerMode.normalize(mode);
+    final db = await database;
+    await db.transaction((txn) async {
+      final prevMode = await _getDrawerModeTxn(txn);
+      if (prevMode != normalized && normalized == DrawerMode.sharedDrawer) {
+        final openShifts = await txn.query('shifts', where: "status = 'open'");
+        final distinctRegIds = openShifts.map((s) => (s['cash_register_id'] as num?)?.toInt() ?? 1).toSet();
+        if (openShifts.length > 1 || distinctRegIds.any((id) => id != 1)) {
+          throw StateError(
+            'Tidak dapat beralih ke SHARED_DRAWER selama masih ada ${openShifts.length} shift individu terbuka. Tutup seluruh shift aktif terlebih dahulu.',
+          );
+        }
+      }
+
+      await txn.insert(
+        'store_settings',
+        {'key': 'drawer_mode', 'value': normalized},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+
+      if (actor != null && prevMode != normalized) {
+        await txn.insert('audit_logs', {
+          'timestamp': DateTime.now().toIso8601String(),
+          'user_id': actor.id ?? 0,
+          'user_name': actor.name,
+          'user_role': actor.role,
+          'action_type': 'ubah_drawer_mode',
+          'module': 'Pengaturan Toko',
+          'object_id': 'SETTING-DRAWER-MODE',
+          'before_value': prevMode,
+          'after_value': normalized,
+          'details': 'Mode laci kas diubah dari $prevMode menjadi $normalized',
+        });
+      }
+    });
+  }
+
+  Future<List<CashRegisterModel>> getCashRegisters({bool includeInactive = false}) async {
+    final db = await database;
+    final rows = includeInactive
+        ? await db.query('cash_registers', orderBy: 'id ASC')
+        : await db.query('cash_registers', where: 'is_active = 1', orderBy: 'id ASC');
+    return rows.map((e) => CashRegisterModel.fromMap(e)).toList();
+  }
+
+  Future<CashRegisterModel?> getCashRegisterById(int id) async {
+    final db = await database;
+    final rows = await db.query('cash_registers', where: 'id = ?', whereArgs: [id], limit: 1);
+    if (rows.isEmpty) return null;
+    return CashRegisterModel.fromMap(rows.first);
+  }
+
+  Future<int> insertCashRegister(CashRegisterModel register) async {
+    final db = await database;
+    return await db.insert('cash_registers', register.toMap());
+  }
+
+  Future<void> updateCashRegister(CashRegisterModel register) async {
+    if (register.id == null) throw ArgumentError('ID laci kas wajib diisi untuk pembaruan.');
+    final db = await database;
+    await db.update(
+      'cash_registers',
+      register.toMap(),
+      where: 'id = ?',
+      whereArgs: [register.id],
+    );
+  }
+
+  Future<List<CashRegisterAssignmentModel>> getCashRegisterAssignments({
+    bool includeInactive = true,
+  }) async {
+    final db = await database;
+    final rows = includeInactive
+        ? await db.query('cash_register_assignments', orderBy: 'priority DESC, id ASC')
+        : await db.query(
+            'cash_register_assignments',
+            where: 'is_active = 1',
+            orderBy: 'priority DESC, id ASC',
+          );
+    return rows.map((e) => CashRegisterAssignmentModel.fromMap(e)).toList();
+  }
+
+  Future<int> saveCashRegisterAssignment(
+    CashRegisterAssignmentModel assignment, {
+    UserModel? actor,
+  }) async {
+    if (assignment.specificityRank <= 0) {
+      throw StateError('Assignment laci kas wajib menentukan minimal terminal_id atau cashier_id.');
+    }
+    final db = await database;
+    return await db.transaction((txn) async {
+      final regRows = await txn.query(
+        'cash_registers',
+        where: 'id = ?',
+        whereArgs: [assignment.cashRegisterId],
+        limit: 1,
+      );
+      if (regRows.isEmpty) {
+        throw StateError('Laci kas ID ${assignment.cashRegisterId} tidak ditemukan.');
+      }
+      final reg = CashRegisterModel.fromMap(regRows.first);
+      if (!reg.isActive && assignment.isActive) {
+        throw StateError('Tidak dapat mengaktifkan assignment ke laci kas "${reg.name}" yang nonaktif.');
+      }
+
+      late final int id;
+      if (assignment.id != null) {
+        id = assignment.id!;
+        await txn.update(
+          'cash_register_assignments',
+          assignment.toMap(),
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+      } else {
+        id = await txn.insert('cash_register_assignments', assignment.toMap());
+      }
+
+      if (actor != null) {
+        await txn.insert('audit_logs', {
+          'timestamp': DateTime.now().toIso8601String(),
+          'user_id': actor.id ?? 0,
+          'user_name': actor.name,
+          'user_role': actor.role,
+          'action_type': 'assign_laci_kas',
+          'module': 'Pengaturan Toko',
+          'object_id': 'REG-${reg.id}',
+          'before_value': '',
+          'after_value':
+              'reg=${reg.registerCode}, terminal=${assignment.terminalId ?? "*"}, cashier=${assignment.cashierId ?? "*"}, priority=${assignment.priority}, active=${assignment.isActive}',
+          'details': 'Penugasan laci kas ${reg.registerCode} (${reg.name}) diperbarui.',
+        });
+      }
+      return id;
+    });
+  }
+
+  Future<void> deleteCashRegisterAssignment(int assignmentId) async {
+    final db = await database;
+    await db.delete('cash_register_assignments', where: 'id = ?', whereArgs: [assignmentId]);
+  }
+
+  /// Deterministically resolves the authorized CashRegister for a cashier + terminal:
+  /// 1. Exact (terminal_id + cashier_id) [rank 3]
+  /// 2. Cashier-level (cashier_id) [rank 2]
+  /// 3. Terminal-level (terminal_id) [rank 1]
+  /// Ties within highest specificity are resolved by highest [priority]; conflicting equal-priority
+  /// assignments targeting distinct registers are rejected deterministically rather than guessing.
+  Future<CashRegisterModel> resolveAuthorizedCashRegisterTxn(
+    DatabaseExecutor db, {
+    required int cashierId,
+    required String terminalId,
+    int? requestedRegisterId,
+  }) async {
+    final cleanTerm = terminalId.trim().isNotEmpty ? terminalId.trim() : 'ADMIN';
+    final drawerMode = await _getDrawerModeTxn(db);
+
+    final assignmentRows = await db.query(
+      'cash_register_assignments',
+      where: 'is_active = 1 AND (terminal_id = ? OR terminal_id IS NULL) AND (cashier_id = ? OR cashier_id IS NULL)',
+      whereArgs: [cleanTerm, cashierId],
+    );
+
+    final matching = assignmentRows
+        .map((r) => CashRegisterAssignmentModel.fromMap(r))
+        .where((a) => a.specificityRank > 0)
+        .toList();
+
+    if (matching.isNotEmpty) {
+      matching.sort((a, b) {
+        final rankCmp = b.specificityRank.compareTo(a.specificityRank);
+        if (rankCmp != 0) return rankCmp;
+        final prioCmp = b.priority.compareTo(a.priority);
+        if (prioCmp != 0) return prioCmp;
+        return (a.id ?? 0).compareTo(b.id ?? 0);
+      });
+
+      final topRank = matching.first.specificityRank;
+      final topPriority = matching.first.priority;
+      final topTied = matching
+          .where((a) => a.specificityRank == topRank && a.priority == topPriority)
+          .toList();
+      final distinctTopRegisterIds = topTied.map((a) => a.cashRegisterId).toSet();
+
+      if (distinctTopRegisterIds.length > 1) {
+        throw StateError(
+          'Konflik assignment laci kas terdeteksi (prioritas sama pada rank $topRank untuk terminal=$cleanTerm, kasir=$cashierId: register $distinctTopRegisterIds). Harap tetapkan prioritas unik di Pengaturan.',
+        );
+      }
+
+      final targetRegId = distinctTopRegisterIds.first;
+      if (requestedRegisterId != null && requestedRegisterId != targetRegId) {
+        throw StateError(
+          'Assignment tidak sah: terminal $cleanTerm / kasir #$cashierId hanya diizinkan menggunakan laci kas #$targetRegId (bukan #$requestedRegisterId).',
+        );
+      }
+
+      final regRows = await db.query('cash_registers', where: 'id = ?', whereArgs: [targetRegId], limit: 1);
+      if (regRows.isEmpty) {
+        throw StateError('Laci kas tujuan (#$targetRegId) tidak ditemukan.');
+      }
+      final reg = CashRegisterModel.fromMap(regRows.first);
+      if (!reg.isActive) {
+        throw StateError('Laci kas "${reg.name}" (${reg.registerCode}) berstatus nonaktif dan tidak sah digunakan.');
+      }
+      return reg;
+    }
+
+    // No explicit rule matched:
+    if (drawerMode == DrawerMode.individualDrawer) {
+      throw StateError(
+        'Mode INDIVIDUAL_DRAWER aktif: terminal $cleanTerm / kasir #$cashierId belum memiliki assignment laci kas yang sah.',
+      );
+    }
+
+    // SHARED_DRAWER default fallback -> shared REG-MAIN (#1)
+    if (requestedRegisterId != null && requestedRegisterId != 1) {
+      throw StateError(
+        'Laci kas #$requestedRegisterId belum memiliki assignment sah untuk terminal $cleanTerm / kasir #$cashierId.',
+      );
+    }
+    final mainRows = await db.query('cash_registers', where: 'id = 1', limit: 1);
+    if (mainRows.isEmpty) {
+      throw StateError('Laci kas utama (REG-MAIN) tidak ditemukan di database.');
+    }
+    final mainReg = CashRegisterModel.fromMap(mainRows.first);
+    if (!mainReg.isActive) {
+      throw StateError('Laci kas utama (${mainReg.registerCode}) sedang dinonaktifkan.');
+    }
+    return mainReg;
+  }
+
+  Future<CashRegisterModel> resolveAuthorizedCashRegister({
+    required int cashierId,
+    required String terminalId,
+    int? requestedRegisterId,
+  }) async {
+    final db = await database;
+    return await resolveAuthorizedCashRegisterTxn(
+      db,
+      cashierId: cashierId,
+      terminalId: terminalId,
+      requestedRegisterId: requestedRegisterId,
     );
   }
 
@@ -1558,10 +2841,30 @@ class DatabaseHelper {
     }
   }
 
-  Future<int> insertTransaction(TransactionModel trx, {int? shiftId}) async {
+  Future<int> insertTransaction(
+    TransactionModel trx, {
+    int? shiftId,
+    String? terminalId,
+    int? cashRegisterId,
+  }) async {
     final db = await database;
     final targetShiftId = shiftId ?? trx.shiftId;
     return await db.transaction((txn) async {
+      // 0. Idempotency check (must never duplicate sales, stock deduction, or cash totals)
+      final cleanIdemKey = trx.idempotencyKey?.trim();
+      if (cleanIdemKey != null && cleanIdemKey.isNotEmpty) {
+        final dupRows = await txn.query(
+          'transactions',
+          columns: ['id'],
+          where: 'idempotency_key = ?',
+          whereArgs: [cleanIdemKey],
+          limit: 1,
+        );
+        if (dupRows.isNotEmpty) {
+          return (dupRows.first['id'] as num).toInt();
+        }
+      }
+
       // 1. Strict Shift Enforcement
       if (targetShiftId == null) {
         throw StateError('Kasir wajib membuka shift terlebih dahulu sebelum melakukan transaksi.');
@@ -1569,6 +2872,30 @@ class DatabaseHelper {
       final shiftRows = await txn.query('shifts', where: 'id = ?', whereArgs: [targetShiftId], limit: 1);
       if (shiftRows.isEmpty || ShiftModel.fromMap(shiftRows.first).status != 'open') {
         throw StateError('Shift tidak valid atau sudah ditutup. Silakan buka shift aktif terlebih dahulu.');
+      }
+      final activeShift = ShiftModel.fromMap(shiftRows.first);
+
+      // 1b. Deterministic Cash Register & Assignment Enforcement
+      final effectiveTerminal = (terminalId != null && terminalId.trim().isNotEmpty)
+          ? terminalId.trim()
+          : (trx.terminalId.trim().isNotEmpty ? trx.terminalId.trim() : activeShift.terminalId);
+      final requestedRegId = cashRegisterId ?? trx.cashRegisterId;
+      final authorizedReg = await resolveAuthorizedCashRegisterTxn(
+        txn,
+        cashierId: trx.cashierId,
+        terminalId: effectiveTerminal,
+        requestedRegisterId: requestedRegId,
+      );
+      if (activeShift.cashRegisterId != authorizedReg.id) {
+        throw StateError(
+          'Shift aktif #${activeShift.id} terikat pada laci kas #${activeShift.cashRegisterId}, bukan laci #${authorizedReg.id} (${authorizedReg.registerCode}).',
+        );
+      }
+      if (activeShift.drawerMode == DrawerMode.individualDrawer &&
+          activeShift.cashierId != trx.cashierId) {
+        throw StateError(
+          'Mode INDIVIDUAL_DRAWER: kasir #${trx.cashierId} (${trx.cashierName}) tidak diizinkan bertransaksi pada shift milik kasir #${activeShift.cashierId} (${activeShift.cashierName}).',
+        );
       }
 
       // 2. Strict Registered Customer Rule for Kasbon or Saldo Kredit
@@ -1632,6 +2959,11 @@ class DatabaseHelper {
 
       final trxMap = trx.toMap();
       trxMap['shift_id'] = targetShiftId;
+      trxMap['terminal_id'] = effectiveTerminal;
+      trxMap['cash_register_id'] = authorizedReg.id;
+      if (cleanIdemKey != null && cleanIdemKey.isNotEmpty) {
+        trxMap['idempotency_key'] = cleanIdemKey;
+      }
       trxMap['credit_used'] = normalizedCreditUsed;
       if (trx.customerId != null) trxMap['customer_id'] = trx.customerId;
       final trxId = await txn.insert('transactions', trxMap);
@@ -1749,6 +3081,8 @@ class DatabaseHelper {
           });
           await txn.insert('cash_flows', {
             'shift_id': targetShiftId,
+            'terminal_id': effectiveTerminal,
+            'cash_register_id': authorizedReg.id,
             'type': 'in',
             'category': 'DP Kasbon',
             'amount': trx.amountPaid,
@@ -1768,15 +3102,110 @@ class DatabaseHelper {
     });
   }
 
-  Future<void> voidTransaction(int trxId, {int? shiftId}) async {
+  /// Voids or reverses a transaction safely without mutating closed shifts retroactively.
+  ///
+  /// - Distinguishes [VoidTypes.prePaymentVoid] (payment never settled) vs
+  ///   [VoidTypes.postPaymentReversal] (reversal/refund after completed payment).
+  /// - If the original shift is already CLOSED (or void happens under another shift),
+  ///   the original shift row is NEVER modified and `transactions.shift_id` stays intact.
+  ///   Cash refunds are settled onto the active OPEN [shiftId] (or open shift) via `transaction_voids`
+  ///   and `cash_flows`; if no valid open shift exists, cash refund / void is held with a clear StateError.
+  Future<int> voidTransaction(
+    int trxId, {
+    int? shiftId,
+    int? voidedBy,
+    String? voidedByName,
+    String reason = '',
+    String? voidType,
+    String? settlementTerminalId,
+  }) async {
     final db = await database;
-    await db.transaction((txn) async {
+    return await db.transaction((txn) async {
       final res = await txn.query('transactions', where: 'id = ?', whereArgs: [trxId], limit: 1);
-      if (res.isEmpty) return;
+      if (res.isEmpty) return 0;
       final trx = TransactionModel.fromMap(res.first);
-      if (trx.status == 'voided') return;
+      if (trx.status == 'voided') {
+        final existingVoids = await txn.query(
+          'transaction_voids',
+          columns: ['id'],
+          where: 'original_transaction_id = ?',
+          whereArgs: [trxId],
+          limit: 1,
+        );
+        return existingVoids.isNotEmpty ? (existingVoids.first['id'] as num).toInt() : 0;
+      }
 
-      final targetShiftId = shiftId ?? trx.shiftId;
+      final effectiveVoidType = (voidType == VoidTypes.prePaymentVoid || voidType == VoidTypes.postPaymentReversal)
+          ? voidType!
+          : VoidTypes.postPaymentReversal;
+
+      ShiftModel? origShift;
+      if (trx.shiftId != null) {
+        final sRows = await txn.query('shifts', where: 'id = ?', whereArgs: [trx.shiftId], limit: 1);
+        if (sRows.isNotEmpty) origShift = ShiftModel.fromMap(sRows.first);
+      }
+
+      // Compute already-refunded cash from active returns on this invoice so net refundable cash is exact
+      final returnedCashRows = await txn.rawQuery('''
+        SELECT COALESCE(SUM(rs.amount), 0) as ret_cash
+        FROM return_settlements rs
+        JOIN return_orders ro ON rs.return_order_id = ro.id
+        WHERE ro.transaction_id = ?
+          AND COALESCE(ro.status, 'completed') != 'voided'
+          AND rs.direction = 'out_to_customer'
+          AND rs.method = 'tunai'
+      ''', [trxId]);
+      final alreadyReturnedCash = (returnedCashRows.first['ret_cash'] as num?)?.toDouble() ?? 0.0;
+      final netDue = (trx.grandTotal - trx.creditUsed).clamp(0.0, double.infinity);
+      final refundableCash = (effectiveVoidType == VoidTypes.postPaymentReversal && trx.paymentMethod == 'tunai')
+          ? (netDue - alreadyReturnedCash).clamp(0.0, netDue)
+          : 0.0;
+
+      // Determine settlement shift strictly
+      ShiftModel? settlementShift;
+      if (shiftId != null) {
+        final sRows = await txn.query('shifts', where: 'id = ?', whereArgs: [shiftId], limit: 1);
+        if (sRows.isNotEmpty) {
+          final cand = ShiftModel.fromMap(sRows.first);
+          if (cand.isOpen) settlementShift = cand;
+        }
+        if (settlementShift == null && refundableCash > 0.001) {
+          throw StateError(
+            'Shift settlement #$shiftId sudah ditutup atau tidak valid. Refund tunai ditahan — buka shift aktif terlebih dahulu.',
+          );
+        }
+      } else if (origShift != null && origShift.isOpen) {
+        settlementShift = origShift;
+      } else if (refundableCash > 0.001) {
+        // Closed original shift and no explicit shiftId passed: check for open shift on requested register/terminal
+        final openRows = await txn.query(
+          'shifts',
+          where: "status = 'open'",
+          orderBy: 'id DESC',
+          limit: 1,
+        );
+        if (openRows.isNotEmpty) {
+          settlementShift = ShiftModel.fromMap(openRows.first);
+        }
+      }
+
+      final bool isSameOpenOrigShift =
+          origShift != null && origShift.isOpen && settlementShift != null && settlementShift.id == origShift.id;
+
+      // CRITICAL: Closed-shift cash reversal MUST be held/blocked if no valid open settlement shift exists!
+      if (!isSameOpenOrigShift &&
+          effectiveVoidType == VoidTypes.postPaymentReversal &&
+          trx.paymentMethod == 'tunai' &&
+          refundableCash > 0.001) {
+        if (settlementShift == null || !settlementShift.isOpen) {
+          throw StateError(
+            'Tidak ada shift aktif yang sah untuk refund tunai Nota #${trx.invoiceNumber}. Refund tunai ditahan hingga ada shift kasir terbuka.',
+          );
+        }
+        await _ensureSufficientShiftCash(txn, settlementShift.id, refundableCash);
+      }
+
+      // 1. Restore unreturned inventory safely
       final alreadyReturnedRows = await txn.rawQuery('''
         SELECT ri.product_id, ri.unit_name, SUM(ri.return_qty) as total_ret
         FROM return_items ri
@@ -1807,14 +3236,17 @@ class DatabaseHelper {
               referenceType: 'void_transaction',
               referenceId: trxId,
               referenceNumber: trx.invoiceNumber,
-              userId: trx.cashierId,
-              userName: trx.cashierName,
+              userId: voidedBy ?? trx.cashierId,
+              userName: (voidedByName != null && voidedByName.trim().isNotEmpty)
+                  ? voidedByName.trim()
+                  : trx.cashierName,
               note: 'Pembalikan stok void nota #${trx.invoiceNumber} (sisa belum retur: $unreturnedQty ${item.unitName})',
             );
           }
         }
       }
 
+      // 2. Restore customer credit if used
       if (trx.creditUsed > 0 && trx.customerId != null) {
         await _appendCustomerCreditLedgerTxn(
           txn,
@@ -1825,16 +3257,27 @@ class DatabaseHelper {
           referenceType: 'void_transaction',
           referenceId: trxId,
           referenceNumber: trx.invoiceNumber,
-          userId: trx.cashierId,
-          userName: trx.cashierName,
+          userId: voidedBy ?? trx.cashierId,
+          userName: (voidedByName != null && voidedByName.trim().isNotEmpty)
+              ? voidedByName.trim()
+              : trx.cashierName,
           note: 'Pengembalian saldo kredit dari pembatalan Nota #${trx.invoiceNumber}',
         );
       }
 
+      // 3. Mark transaction status = 'voided' while keeping original shift_id & cash_register_id untouched!
       await txn.update('transactions', {'status': 'voided'}, where: 'id = ?', whereArgs: [trxId]);
 
-      final netDue = (trx.grandTotal - trx.creditUsed).clamp(0.0, double.infinity);
-      if (targetShiftId != null) {
+      final nowIso = DateTime.now().toIso8601String();
+      final effectiveVoidedBy = voidedBy ?? trx.cashierId;
+      final effectiveVoidedByName =
+          (voidedByName != null && voidedByName.trim().isNotEmpty) ? voidedByName.trim() : trx.cashierName;
+      final effectiveTerm = settlementTerminalId ?? settlementShift?.terminalId ?? 'ADMIN';
+      int? cashFlowId;
+
+      if (isSameOpenOrigShift) {
+        // Void inside the SAME open shift: adjust live open shift totals consistently
+        final targetShiftId = origShift.id!;
         if (trx.creditUsed > 0) {
           await txn.rawUpdate(
             'UPDATE shifts SET total_sales_credit = MAX(0, total_sales_credit - ?) WHERE id = ?',
@@ -1862,9 +3305,48 @@ class DatabaseHelper {
             [netDue, targetShiftId],
           );
         }
+      } else if (effectiveVoidType == VoidTypes.postPaymentReversal) {
+        // CLOSED original shift (or cross-shift void): NEVER touch closed original shift!
+        if (trx.paymentMethod == 'tunai' && refundableCash > 0.001 && settlementShift?.id != null) {
+          cashFlowId = await _insertCashFlowInTxn(
+            txn,
+            shiftId: settlementShift!.id,
+            terminalId: settlementShift.terminalId,
+            cashRegisterId: settlementShift.cashRegisterId,
+            type: 'out',
+            category: 'Refund Void Nota Shift Tertutup',
+            amount: refundableCash,
+            paymentMethod: 'tunai',
+            accountName: 'Laci Kasir',
+            sourceType: 'void_reversal',
+            sourceId: trx.invoiceNumber,
+            note: 'Refund tunai void Nota #${trx.invoiceNumber} (shift asal #${trx.shiftId ?? "-"}): ${reason.trim()}',
+            cashierName: effectiveVoidedByName,
+          );
+          await txn.rawUpdate(
+            'UPDATE shifts SET total_return_cash = total_return_cash + ? WHERE id = ?',
+            [refundableCash, settlementShift.id],
+          );
+        } else if ((trx.paymentMethod == 'qris' || trx.paymentMethod == 'transfer') && netDue > 0.001) {
+          cashFlowId = await _insertCashFlowInTxn(
+            txn,
+            shiftId: null,
+            terminalId: effectiveTerm,
+            cashRegisterId: settlementShift?.cashRegisterId ?? trx.cashRegisterId,
+            type: 'out',
+            category: 'Reversal Void Non-Tunai',
+            amount: netDue,
+            paymentMethod: trx.paymentMethod,
+            accountName: trx.paymentMethod == 'transfer' ? 'Rekening Bank' : 'QRIS / E-Wallet',
+            sourceType: 'void_reversal',
+            sourceId: trx.invoiceNumber,
+            note: 'Reversal non-tunai void Nota #${trx.invoiceNumber}: ${reason.trim()}',
+            cashierName: effectiveVoidedByName,
+          );
+        }
       }
 
-      // Preserve debt payment history cleanly if a kasbon transaction is voided
+      // 4. Preserve debt payment history cleanly if a kasbon transaction is voided
       if (trx.paymentMethod == 'kasbon') {
         final debtRows = await txn.query(
           'customer_debts',
@@ -1885,7 +3367,59 @@ class DatabaseHelper {
           );
         }
       }
+
+      // 5. Record immutable void/reversal event in `transaction_voids`
+      final String recordedRefundMethod = effectiveVoidType == VoidTypes.prePaymentVoid
+          ? 'none'
+          : (trx.paymentMethod == 'kasbon' ? 'kasbon_cancel' : trx.paymentMethod);
+      final double recordedRefundAmount = effectiveVoidType == VoidTypes.prePaymentVoid
+          ? 0.0
+          : (trx.paymentMethod == 'tunai' ? refundableCash : netDue);
+
+      final voidModel = TransactionVoidModel(
+        originalTransactionId: trxId,
+        originalInvoiceNumber: trx.invoiceNumber,
+        originalShiftId: trx.shiftId,
+        originalCashRegisterId: trx.cashRegisterId,
+        voidType: effectiveVoidType,
+        refundMethod: recordedRefundMethod,
+        refundAmount: recordedRefundAmount,
+        creditRestored: trx.creditUsed,
+        voidedAt: DateTime.parse(nowIso),
+        voidedBy: effectiveVoidedBy,
+        voidedByName: effectiveVoidedByName,
+        voidReason: reason.trim(),
+        settlementShiftId: settlementShift?.id,
+        settlementCashRegisterId: settlementShift?.cashRegisterId,
+        settlementTerminalId: effectiveTerm,
+        cashFlowId: cashFlowId,
+      );
+      return await txn.insert('transaction_voids', voidModel.toMap());
     });
+  }
+
+  Future<List<TransactionVoidModel>> getTransactionVoids({
+    int? originalTransactionId,
+    int? settlementShiftId,
+  }) async {
+    final db = await database;
+    final whereParts = <String>[];
+    final args = <dynamic>[];
+    if (originalTransactionId != null) {
+      whereParts.add('original_transaction_id = ?');
+      args.add(originalTransactionId);
+    }
+    if (settlementShiftId != null) {
+      whereParts.add('settlement_shift_id = ?');
+      args.add(settlementShiftId);
+    }
+    final rows = await db.query(
+      'transaction_voids',
+      where: whereParts.isEmpty ? null : whereParts.join(' AND '),
+      whereArgs: args.isEmpty ? null : args,
+      orderBy: 'id DESC',
+    );
+    return rows.map((e) => TransactionVoidModel.fromMap(e)).toList();
   }
 
   Future<TransactionModel?> getTransactionByInvoice(String invoiceNumber) async {
@@ -2088,6 +3622,8 @@ class DatabaseHelper {
   Future<int> _insertCashFlowInTxn(
     Transaction txn, {
     int? shiftId,
+    String? terminalId,
+    int? cashRegisterId,
     required String type,
     required String category,
     required double amount,
@@ -2098,8 +3634,25 @@ class DatabaseHelper {
     required String note,
     required String cashierName,
   }) async {
+    String resolvedTerm = (terminalId != null && terminalId.trim().isNotEmpty) ? terminalId.trim() : 'ADMIN';
+    int resolvedReg = cashRegisterId ?? 1;
+    if (shiftId != null && (terminalId == null || cashRegisterId == null)) {
+      final sRows = await txn.query(
+        'shifts',
+        columns: ['terminal_id', 'cash_register_id'],
+        where: 'id = ?',
+        whereArgs: [shiftId],
+        limit: 1,
+      );
+      if (sRows.isNotEmpty) {
+        resolvedTerm = terminalId ?? (sRows.first['terminal_id']?.toString() ?? 'ADMIN');
+        resolvedReg = cashRegisterId ?? ((sRows.first['cash_register_id'] as num?)?.toInt() ?? 1);
+      }
+    }
     return await txn.insert('cash_flows', {
       'shift_id': shiftId,
+      'terminal_id': resolvedTerm,
+      'cash_register_id': resolvedReg,
       'type': type,
       'category': category,
       'amount': amount,
@@ -2132,9 +3685,23 @@ class DatabaseHelper {
     switch (method) {
       case RefundMethods.tunai:
         await _ensureSufficientShiftCash(txn, shiftId, amount);
+        int? settlementRegId;
+        if (shiftId != null) {
+          final sRows = await txn.query(
+            'shifts',
+            columns: ['cash_register_id'],
+            where: 'id = ?',
+            whereArgs: [shiftId],
+            limit: 1,
+          );
+          if (sRows.isNotEmpty) {
+            settlementRegId = (sRows.first['cash_register_id'] as num?)?.toInt() ?? 1;
+          }
+        }
         final cfId = await _insertCashFlowInTxn(
           txn,
           shiftId: shiftId,
+          cashRegisterId: settlementRegId,
           type: 'out',
           category: '$labelPrefix Penjualan',
           amount: amount,
@@ -2159,6 +3726,8 @@ class DatabaseHelper {
           'amount': amount,
           'account_name': 'Laci Kasir',
           'shift_id': shiftId,
+          'settlement_shift_id': shiftId,
+          'settlement_cash_register_id': settlementRegId,
           'customer_id': resolvedCustomerId,
           'cash_flow_id': cfId,
           'note': '$labelPrefix tunai dari laci kasir',
@@ -3278,8 +4847,108 @@ class DatabaseHelper {
   }
 
   // ================= SHIFTS & CASH FLOW =================
-  Future<ShiftModel?> getCurrentOpenShift() async {
+  Future<List<ShiftModel>> getOpenShifts({
+    int? cashRegisterId,
+    int? cashierId,
+  }) async {
     final db = await database;
+    final whereParts = <String>["status = 'open'"];
+    final args = <dynamic>[];
+    if (cashRegisterId != null) {
+      whereParts.add('cash_register_id = ?');
+      args.add(cashRegisterId);
+    }
+    if (cashierId != null) {
+      whereParts.add('cashier_id = ?');
+      args.add(cashierId);
+    }
+    final res = await db.query(
+      'shifts',
+      where: whereParts.join(' AND '),
+      whereArgs: args.isEmpty ? null : args,
+      orderBy: 'id DESC',
+    );
+    return res.map((e) => ShiftModel.fromMap(e)).toList();
+  }
+
+  Future<ShiftModel?> getCurrentOpenShift({
+    int? cashierId,
+    String? terminalId,
+    int? cashRegisterId,
+  }) async {
+    final db = await database;
+    if (cashRegisterId != null) {
+      final res = await db.query(
+        'shifts',
+        where: "status = 'open' AND cash_register_id = ?",
+        whereArgs: [cashRegisterId],
+        orderBy: 'id DESC',
+        limit: 1,
+      );
+      return res.isNotEmpty ? ShiftModel.fromMap(res.first) : null;
+    }
+    if (cashierId == null && terminalId == null) {
+      final res = await db.query(
+        'shifts',
+        where: "status = 'open'",
+        orderBy: 'id DESC',
+        limit: 1,
+      );
+      return res.isNotEmpty ? ShiftModel.fromMap(res.first) : null;
+    }
+
+    final drawerMode = await _getDrawerModeTxn(db);
+    if (drawerMode == DrawerMode.individualDrawer && cashierId != null) {
+      if (terminalId != null && terminalId.trim().isNotEmpty) {
+        try {
+          final authReg = await resolveAuthorizedCashRegisterTxn(
+            db,
+            cashierId: cashierId,
+            terminalId: terminalId,
+          );
+          final byReg = await db.query(
+            'shifts',
+            where: "status = 'open' AND cash_register_id = ? AND cashier_id = ?",
+            whereArgs: [authReg.id, cashierId],
+            orderBy: 'id DESC',
+            limit: 1,
+          );
+          if (byReg.isNotEmpty) return ShiftModel.fromMap(byReg.first);
+        } catch (_) {}
+      }
+      final byCashier = await db.query(
+        'shifts',
+        where: "status = 'open' AND cashier_id = ?",
+        whereArgs: [cashierId],
+        orderBy: 'id DESC',
+        limit: 1,
+      );
+      return byCashier.isNotEmpty ? ShiftModel.fromMap(byCashier.first) : null;
+    }
+
+    // SHARED_DRAWER or legacy fallback without parameters
+    if (drawerMode == DrawerMode.sharedDrawer) {
+      int targetRegId = 1;
+      if (cashierId != null && terminalId != null && terminalId.trim().isNotEmpty) {
+        try {
+          final reg = await resolveAuthorizedCashRegisterTxn(
+            db,
+            cashierId: cashierId,
+            terminalId: terminalId,
+          );
+          targetRegId = reg.id ?? 1;
+        } catch (_) {}
+      }
+      final res = await db.query(
+        'shifts',
+        where: "status = 'open' AND cash_register_id = ?",
+        whereArgs: [targetRegId],
+        orderBy: 'id DESC',
+        limit: 1,
+      );
+      if (res.isNotEmpty) return ShiftModel.fromMap(res.first);
+    }
+
     final res = await db.query(
       'shifts',
       where: "status = 'open'",
@@ -3299,22 +4968,55 @@ class DatabaseHelper {
   Future<int> openShift(ShiftModel shift) async {
     final db = await database;
     return await db.transaction((txn) async {
-      final existing = await txn.query(
-        'shifts',
-        where: "status = 'open'",
-        orderBy: 'id DESC',
-        limit: 1,
-      );
-      if (existing.isNotEmpty) {
-        final active = ShiftModel.fromMap(existing.first);
-        throw StateError(
-          'Masih ada shift terbuka atas nama "${active.cashierName}" (mulai ${active.startTime.toString().substring(0, 16)}). Tutup shift aktif terlebih dahulu sebelum membuka shift baru.',
-        );
-      }
       if (shift.startingCash < 0) {
         throw StateError('Modal awal shift tidak boleh negatif.');
       }
-      return await txn.insert('shifts', shift.toMap());
+
+      final drawerMode = await _getDrawerModeTxn(txn);
+      final cleanTerm = shift.terminalId.trim().isNotEmpty ? shift.terminalId.trim() : 'ADMIN';
+      final authReg = await resolveAuthorizedCashRegisterTxn(
+        txn,
+        cashierId: shift.cashierId,
+        terminalId: cleanTerm,
+        requestedRegisterId: shift.cashRegisterId,
+      );
+
+      // Rule: Only 1 open shift allowed per cash register
+      final existingOnReg = await txn.query(
+        'shifts',
+        where: "status = 'open' AND cash_register_id = ?",
+        whereArgs: [authReg.id],
+        orderBy: 'id DESC',
+        limit: 1,
+      );
+      if (existingOnReg.isNotEmpty) {
+        final active = ShiftModel.fromMap(existingOnReg.first);
+        throw StateError(
+          'Masih ada shift terbuka pada laci "${authReg.name}" atas nama "${active.cashierName}" (mulai ${active.startTime.toString().substring(0, 16)}). Tutup shift aktif terlebih dahulu sebelum membuka shift baru.',
+        );
+      }
+
+      // Rule: In INDIVIDUAL_DRAWER mode, same cashier cannot open 2 simultaneous open individual shifts
+      if (drawerMode == DrawerMode.individualDrawer) {
+        final existingForCashier = await txn.query(
+          'shifts',
+          where: "status = 'open' AND drawer_mode = ? AND cashier_id = ?",
+          whereArgs: [DrawerMode.individualDrawer, shift.cashierId],
+          limit: 1,
+        );
+        if (existingForCashier.isNotEmpty) {
+          final active = ShiftModel.fromMap(existingForCashier.first);
+          throw StateError(
+            'Kasir "${shift.cashierName}" masih memiliki shift individu yang terbuka pada laci #${active.cashRegisterId}. Tutup shift aktif terlebih dahulu sebelum membuka shift baru.',
+          );
+        }
+      }
+
+      final shiftMap = shift.toMap();
+      shiftMap['terminal_id'] = cleanTerm;
+      shiftMap['cash_register_id'] = authReg.id;
+      shiftMap['drawer_mode'] = drawerMode;
+      return await txn.insert('shifts', shiftMap);
     });
   }
 
@@ -3342,7 +5044,7 @@ class DatabaseHelper {
           'status': 'closed',
           'note': note.trim(),
         },
-        where: 'id = ?',
+        where: "id = ? AND status = 'open'",
         whereArgs: [shiftId],
       );
     });
@@ -3402,17 +5104,33 @@ class DatabaseHelper {
     final startIso = shift.startTime.toIso8601String();
     final endIso = (shift.endTime ?? DateTime.now()).toIso8601String();
 
-    final txRows = shift.id != null
-        ? await db.query(
-            'transactions',
-            where: "status != 'voided' AND (shift_id = ? OR (shift_id IS NULL AND date >= ? AND date <= ?))",
-            whereArgs: [shift.id, startIso, endIso],
-          )
-        : await db.query(
-            'transactions',
-            where: "status != 'voided' AND date >= ? AND date <= ?",
-            whereArgs: [startIso, endIso],
-          );
+    final List<Map<String, dynamic>> txRows;
+    if (shift.id != null) {
+      final allowLegacyNullBackfill =
+          shift.drawerMode == DrawerMode.sharedDrawer && shift.cashRegisterId == 1;
+      if (allowLegacyNullBackfill) {
+        txRows = await db.query(
+          'transactions',
+          where:
+              "status != 'voided' AND (shift_id = ? OR (shift_id IS NULL AND COALESCE(terminal_id, 'ADMIN') = 'ADMIN' AND COALESCE(cash_register_id, 1) = 1 AND date >= ? AND date <= ?))",
+          whereArgs: [shift.id, startIso, endIso],
+        );
+      } else {
+        // Strict shift isolation: INDIVIDUAL_DRAWER / secondary registers must NEVER absorb null-shift rows
+        txRows = await db.query(
+          'transactions',
+          where: "status != 'voided' AND shift_id = ?",
+          whereArgs: [shift.id],
+        );
+      }
+    } else {
+      txRows = await db.query(
+        'transactions',
+        where:
+            "status != 'voided' AND COALESCE(cash_register_id, 1) = ? AND date >= ? AND date <= ?",
+        whereArgs: [shift.cashRegisterId, startIso, endIso],
+      );
+    }
 
     double profit = 0.0;
     for (final map in txRows) {
@@ -3440,7 +5158,25 @@ class DatabaseHelper {
       if (flow.isOut && flow.paymentMethod == 'tunai' && flow.accountName == 'Laci Kasir') {
         await _ensureSufficientShiftCash(txn, flow.shiftId, flow.amount);
       }
-      final id = await txn.insert('cash_flows', flow.toMap());
+      final flowMap = flow.toMap();
+      if (flow.shiftId != null) {
+        final sRows = await txn.query(
+          'shifts',
+          columns: ['terminal_id', 'cash_register_id'],
+          where: 'id = ?',
+          whereArgs: [flow.shiftId],
+          limit: 1,
+        );
+        if (sRows.isNotEmpty) {
+          if (flow.terminalId == 'ADMIN') {
+            flowMap['terminal_id'] = sRows.first['terminal_id'] ?? 'ADMIN';
+          }
+          if (flow.cashRegisterId == 1) {
+            flowMap['cash_register_id'] = (sRows.first['cash_register_id'] as num?)?.toInt() ?? 1;
+          }
+        }
+      }
+      final id = await txn.insert('cash_flows', flowMap);
       if (flow.shiftId != null && flow.paymentMethod == 'tunai' && flow.accountName == 'Laci Kasir') {
         if (flow.isIn) {
           await txn.rawUpdate(
