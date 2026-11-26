@@ -36,6 +36,7 @@ import 'reports/daily_report_screen.dart';
 import 'returns/return_screen.dart';
 import 'scanner/barcode_scanner_screen.dart';
 import 'service/service_list_screen.dart';
+import 'settings/multi_device_server_screen.dart';
 import 'settings/printer_management_screen.dart';
 import 'settings/receipt_settings_screen.dart';
 import 'settings/settings_screen.dart';
@@ -819,6 +820,14 @@ class _HomeScreenState extends State<HomeScreen> {
           icon: Icons.security_rounded,
           color: AppTheme.accentRed,
           onTap: () => _pushAndRefresh(const AuditLogScreen()),
+        ),
+      if (auth.hasPermission(AppPermissions.manageStoreSettings))
+        _ModuleItem(
+          title: 'Server LAN',
+          subtitle: 'Terminal Staff',
+          icon: Icons.wifi_tethering_rounded,
+          color: AppTheme.primaryGreen,
+          onTap: () => _pushAndRefresh(const MultiDeviceServerScreen()),
         ),
       if (auth.hasPermission(AppPermissions.manageStoreSettings))
         _ModuleItem(

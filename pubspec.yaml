@@ -67,6 +67,10 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   sqflite_common_ffi: ^2.4.5
 
+dependency_overrides:
+  # Use pure Kotlin path_provider_android 2.2.x to avoid transitive C++/CMake jni build failures
+  path_provider_android: ">=2.2.5 <2.3.0"
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 

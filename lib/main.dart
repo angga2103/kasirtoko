@@ -11,6 +11,7 @@ import 'providers/pos_provider.dart';
 import 'providers/printer_provider.dart';
 import 'providers/product_provider.dart';
 import 'providers/purchase_provider.dart';
+import 'providers/server_provider.dart';
 import 'providers/service_order_provider.dart';
 import 'providers/settings_provider.dart';
 
@@ -50,6 +51,7 @@ class KasirTokoApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => PurchaseProvider()..loadPurchases()),
         ChangeNotifierProvider(create: (_) => PrinterProvider()..loadPrinters()),
         ChangeNotifierProvider(create: (_) => ServiceOrderProvider()..loadOrders()),
+        ChangeNotifierProvider(create: (_) => PosServerProvider()..initialize()),
       ],
       child: MaterialApp(
         title: 'KasirToko Universal POS',

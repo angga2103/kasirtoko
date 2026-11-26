@@ -19,6 +19,7 @@ import '../../services/server_lifecycle_bridge.dart';
 import '../../utils/app_theme.dart';
 import '../../widgets/image_picker_cropper.dart';
 import '../employees/employee_management_screen.dart';
+import 'multi_device_server_screen.dart';
 import 'printer_management_screen.dart';
 import 'receipt_settings_screen.dart';
 
@@ -727,6 +728,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           spacing: 10,
                           runSpacing: 8,
                           children: [
+                            OutlinedButton.icon(
+                              icon: const Icon(Icons.wifi_tethering_rounded),
+                              label: const Text('Server LAN & Terminal Staff'),
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => const MultiDeviceServerScreen(),
+                                  ),
+                                );
+                              },
+                            ),
                             OutlinedButton.icon(
                               icon: const Icon(Icons.assignment_ind_rounded),
                               label: Text('Kelola Laci & Assignment (${sProv.cashRegisters.length})'),

@@ -413,9 +413,9 @@ void main() {
         await checkBackup.close();
       }
 
-      // 4. Verify SQLite PRAGMAs on upgraded v5 database
+      // 4. Verify SQLite PRAGMAs on upgraded database (v4 -> current dbVersion)
       final verRows = await migrated.rawQuery('PRAGMA user_version');
-      expect((verRows.first.values.first as num).toInt(), 5);
+      expect((verRows.first.values.first as num).toInt(), DatabaseHelper.dbVersion);
       final fkRows = await migrated.rawQuery('PRAGMA foreign_keys');
       expect((fkRows.first.values.first as num).toInt(), 1);
       final jmRows = await migrated.rawQuery('PRAGMA journal_mode');

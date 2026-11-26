@@ -53,9 +53,12 @@ class MainActivity : FlutterActivity() {
         private const val REQ_NOTIFICATION_PERMISSION = 9102
         private const val KEYSTORE_PROVIDER = "AndroidKeyStore"
         private const val PEPPER_KEK_ALIAS = "kasirtoko_pepper_kek_v1"
+        private const val VAULT_KEK_ALIAS = "kasirtoko_vault_kek_v1"
         private const val PEPPER_PREFS = "kasirtoko_keystore_prefs"
+        private const val VAULT_PREFS = "kasirtoko_vault_prefs"
         private const val KEY_WRAPPED_PEPPER = "wrapped_pepper_b64"
         private const val KEY_WRAPPED_IV = "wrapped_pepper_iv_b64"
+        private const val KEY_LEGACY_VAULT_AES = "legacy_api21_vault_aes_b64"
         private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
     }
 
@@ -102,6 +105,77 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                "wrapSecret" -> {
+                    val plaintext = call.argument<String>("plaintext") ?: ""
+                    cryptoExecutor.execute {
+                        try {
+                            val envelope = wrapVaultSecret(plaintext)
+                            mainHandler.post { result.success(envelope) }
+                        } catch (e: Exception) {
+                            mainHandler.post { result.error("VAULT_WRAP_FAILED", e.message, null) }
+                        }
+                    }
+                }
+
+                "unwrapSecret" -> {
+                    val envelope = call.argument<String>("envelope") ?: ""
+                    cryptoExecutor.execute {
+                        try {
+                            val plaintext = unwrapVaultSecret(envelope)
+                            mainHandler.post { result.success(plaintext) }
+                        } catch (e: Exception) {
+                            mainHandler.post { result.error("VAULT_UNWRAP_FAILED", e.message, null) }
+                        }
+                    }
+                }
+
+                "putVaultRecord" -> {
+                    val key = call.argument<String>("key") ?: ""
+                    val value = call.argument<String>("value") ?: ""
+                    cryptoExecutor.execute {
+                        try {
+                            if (key.isBlank()) throw IllegalArgumentException("Vault key empty")
+                            val wrapped = wrapVaultSecret(value)
+                            getSharedPreferences(VAULT_PREFS, Context.MODE_PRIVATE)
+                                .edit()
+                                .putString("rec_$key", wrapped)
+                                .apply()
+                            mainHandler.post { result.success(true) }
+                        } catch (e: Exception) {
+                            mainHandler.post { result.error("VAULT_PUT_FAILED", e.message, null) }
+                        }
+                    }
+                }
+
+                "getVaultRecord" -> {
+                    val key = call.argument<String>("key") ?: ""
+                    cryptoExecutor.execute {
+                        try {
+                            if (key.isBlank()) {
+                                mainHandler.post { result.success(null) }
+                                return@execute
+                            }
+                            val wrapped = getSharedPreferences(VAULT_PREFS, Context.MODE_PRIVATE)
+                                .getString("rec_$key", null)
+                            val plain = if (!wrapped.isNullOrEmpty()) unwrapVaultSecret(wrapped) else null
+                            mainHandler.post { result.success(plain) }
+                        } catch (e: Exception) {
+                            mainHandler.post { result.error("VAULT_GET_FAILED", e.message, null) }
+                        }
+                    }
+                }
+
+                "deleteVaultRecord" -> {
+                    val key = call.argument<String>("key") ?: ""
+                    if (key.isNotBlank()) {
+                        getSharedPreferences(VAULT_PREFS, Context.MODE_PRIVATE)
+                            .edit()
+                            .remove("rec_$key")
+                            .apply()
+                    }
+                    result.success(true)
+                }
+
                 else -> result.notImplemented()
             }
         }
@@ -110,12 +184,30 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "startForegroundServerShell" -> {
                     val storeName = call.argument<String>("storeName") ?: "KasirToko POS"
+                    val port = call.argument<Int>("port") ?: 8443
                     ensureNotificationPermissionIfNeeded()
                     val intent = Intent(this, PosServerForegroundService::class.java).apply {
                         action = PosServerForegroundService.ACTION_START
                         putExtra(PosServerForegroundService.EXTRA_STORE_NAME, storeName)
+                        putExtra(PosServerForegroundService.EXTRA_PORT, port)
                     }
                     ContextCompat.startForegroundService(this, intent)
+                    result.success(readServerLifecycleStatus())
+                }
+
+                "updateForegroundServerInfo" -> {
+                    val storeName = call.argument<String>("storeName") ?: "KasirToko POS"
+                    val port = call.argument<Int>("port") ?: 8443
+                    val connected = call.argument<Int>("connectedCount") ?: 0
+                    val live = call.argument<Boolean>("serverLive") ?: false
+                    val intent = Intent(this, PosServerForegroundService::class.java).apply {
+                        action = PosServerForegroundService.ACTION_UPDATE_STATUS
+                        putExtra(PosServerForegroundService.EXTRA_STORE_NAME, storeName)
+                        putExtra(PosServerForegroundService.EXTRA_PORT, port)
+                        putExtra(PosServerForegroundService.EXTRA_CONNECTED_TERMINALS, connected)
+                        putExtra(PosServerForegroundService.EXTRA_SERVER_LIVE, live)
+                    }
+                    startService(intent)
                     result.success(readServerLifecycleStatus())
                 }
 
@@ -305,6 +397,62 @@ class MainActivity : FlutterActivity() {
             .apply()
 
         return Base64.encodeToString(rawPepper, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+    }
+
+    private fun getOrCreateVaultSecretKey(): SecretKey {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val ks = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
+            val existing = ks.getKey(VAULT_KEK_ALIAS, null) as? SecretKey
+            if (existing != null) return existing
+            val keyGen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE_PROVIDER)
+            val builder = KeyGenParameterSpec.Builder(
+                VAULT_KEK_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .setRandomizedEncryptionRequired(true)
+            keyGen.init(builder.build())
+            return keyGen.generateKey()
+        }
+        val prefs = getSharedPreferences(VAULT_PREFS, Context.MODE_PRIVATE)
+        val existing = prefs.getString(KEY_LEGACY_VAULT_AES, null)
+        val raw = if (!existing.isNullOrEmpty()) {
+            Base64.decode(existing, Base64.NO_WRAP)
+        } else {
+            ByteArray(32).also {
+                SecureRandom().nextBytes(it)
+                prefs.edit().putString(KEY_LEGACY_VAULT_AES, Base64.encodeToString(it, Base64.NO_WRAP)).apply()
+            }
+        }
+        return javax.crypto.spec.SecretKeySpec(raw, "AES")
+    }
+
+    private fun wrapVaultSecret(plaintext: String): String {
+        val key = getOrCreateVaultSecretKey()
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, key)
+        val iv = cipher.iv
+        val encrypted = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+        return "v1:${Base64.encodeToString(iv, Base64.NO_WRAP)}:${Base64.encodeToString(encrypted, Base64.NO_WRAP)}"
+    }
+
+    private fun unwrapVaultSecret(envelope: String): String {
+        if (!envelope.startsWith("v1:")) {
+            throw IllegalArgumentException("Unsupported secret vault envelope format")
+        }
+        val parts = envelope.split(":", limit = 3)
+        if (parts.size != 3) {
+            throw IllegalArgumentException("Malformed secret vault envelope")
+        }
+        val iv = Base64.decode(parts[1], Base64.NO_WRAP)
+        val ct = Base64.decode(parts[2], Base64.NO_WRAP)
+        val key = getOrCreateVaultSecretKey()
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+        val plainBytes = cipher.doFinal(ct)
+        return String(plainBytes, Charsets.UTF_8)
     }
 
     private fun playBeepTone(durationMs: Int) {

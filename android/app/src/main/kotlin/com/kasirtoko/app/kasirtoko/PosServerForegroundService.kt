@@ -37,6 +37,9 @@ class PosServerForegroundService : Service() {
         const val KEY_WAS_INTERRUPTED = "server_was_interrupted"
         const val KEY_LAST_IP_SUMMARY = "server_last_ip_summary"
         const val KEY_LAST_STARTED_AT = "server_last_started_at"
+        const val KEY_PORT = "server_port"
+        const val KEY_CONNECTED_TERMINALS = "server_connected_terminals"
+        const val KEY_SERVER_LIVE = "server_is_live"
 
         const val CHANNEL_ID = "kasirtoko_pos_server_channel"
         const val NOTIFICATION_ID = 7201
@@ -44,7 +47,11 @@ class PosServerForegroundService : Service() {
 
         const val ACTION_START = "com.kasirtoko.app.action.START_SERVER_SHELL"
         const val ACTION_STOP = "com.kasirtoko.app.action.STOP_SERVER_SHELL"
+        const val ACTION_UPDATE_STATUS = "com.kasirtoko.app.action.UPDATE_SERVER_STATUS"
         const val EXTRA_STORE_NAME = "store_name"
+        const val EXTRA_PORT = "server_port"
+        const val EXTRA_CONNECTED_TERMINALS = "connected_terminals"
+        const val EXTRA_SERVER_LIVE = "server_live"
 
         fun collectLocalIpv4Summary(context: Context): String {
             return try {
@@ -92,6 +99,9 @@ class PosServerForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var storeName: String = "KasirToko POS"
+    private var serverPort: Int = 8443
+    private var connectedCount: Int = 0
+    private var serverLive: Boolean = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -108,7 +118,24 @@ class PosServerForegroundService : Service() {
             return START_NOT_STICKY
         }
 
+        if (intent?.action == ACTION_UPDATE_STATUS) {
+            storeName = intent.getStringExtra(EXTRA_STORE_NAME)?.takeIf { it.isNotBlank() } ?: storeName
+            serverPort = intent.getIntExtra(EXTRA_PORT, serverPort)
+            connectedCount = intent.getIntExtra(EXTRA_CONNECTED_TERMINALS, connectedCount)
+            serverLive = intent.getBooleanExtra(EXTRA_SERVER_LIVE, serverLive)
+            val ipSummary = collectLocalIpv4Summary(this)
+            getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                .putString(KEY_LAST_IP_SUMMARY, ipSummary)
+                .putInt(KEY_PORT, serverPort)
+                .putInt(KEY_CONNECTED_TERMINALS, connectedCount)
+                .putBoolean(KEY_SERVER_LIVE, serverLive)
+                .apply()
+            updateNotification(ipSummary)
+            return START_STICKY
+        }
+
         storeName = intent?.getStringExtra(EXTRA_STORE_NAME)?.takeIf { it.isNotBlank() } ?: "KasirToko POS"
+        serverPort = intent?.getIntExtra(EXTRA_PORT, 8443) ?: 8443
         val ipSummary = collectLocalIpv4Summary(this)
 
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -117,6 +144,7 @@ class PosServerForegroundService : Service() {
             .putBoolean(KEY_IS_RUNNING, true)
             .putBoolean(KEY_WAS_INTERRUPTED, false)
             .putString(KEY_LAST_IP_SUMMARY, ipSummary)
+            .putInt(KEY_PORT, serverPort)
             .putLong(KEY_LAST_STARTED_AT, System.currentTimeMillis())
             .apply()
 
@@ -206,8 +234,13 @@ class PosServerForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val titleText = if (serverLive) {
+            "$storeName • Server POS Aktif (:$serverPort • $connectedCount terminal)"
+        } else {
+            "$storeName • Mode Server Siap"
+        }
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("$storeName • Mode Server Siap")
+            .setContentTitle(titleText)
             .setContentText("IP Lokal: $ipSummary")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setOngoing(true)

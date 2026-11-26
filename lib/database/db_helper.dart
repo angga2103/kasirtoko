@@ -81,7 +81,7 @@ class BarcodeConflictResult {
 }
 
 class DatabaseHelper {
-  static const int dbVersion = 5;
+  static const int dbVersion = 6;
   static final DatabaseHelper instance = DatabaseHelper._init();
   static Database? _database;
   static String? _testDbPath;
@@ -90,6 +90,11 @@ class DatabaseHelper {
   static bool _autoConfiguredTestIterations = false;
   static String? _cachedSeedSignature;
   static List<Map<String, dynamic>>? _cachedTestSeedUsers;
+
+  /// Optional real-time broadcaster attached by the Phase 2 LAN Server to emit
+  /// WebSocket events when local Admin mutations change catalog, promos, settings,
+  /// users, shifts, or transactions.
+  void Function(String eventType, Map<String, dynamic> data)? onMultiDeviceEvent;
 
   DatabaseHelper._init();
 
@@ -147,9 +152,12 @@ class DatabaseHelper {
       return null;
     }
 
-    final backupPath = p.join(p.dirname(dbPath), backupFileName);
+    final resolvedFileName = existingVersion <= 4
+        ? backupFileName
+        : '${p.basenameWithoutExtension(dbPath)}_pre_v${dbVersion}_backup.db';
+    final backupPath = p.join(p.dirname(dbPath), resolvedFileName);
     final backupFile = File(backupPath);
-    // Refresh pre-v5 backup if upgrading from older version and not yet verified
+    // Refresh pre-migration backup before touching live database
     await dbFile.copy(backupPath);
 
     if (!await backupFile.exists() || await backupFile.length() <= 0) {
@@ -668,7 +676,175 @@ class DatabaseHelper {
         conflictAlgorithm: ConflictAlgorithm.ignore,
       );
     }
+
+    if (oldVersion < 6) {
+      await _applyV6Upgrade(db);
+    }
   }
+
+  Future<void> _applyV6Upgrade(DatabaseExecutor db) async {
+    final nowIso = DateTime.now().toIso8601String();
+
+    if (await _tableExists(db, 'products')) {
+      await _addColumnIfMissing(db, 'products', 'updated_at', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'products', 'sync_version', 'INTEGER NOT NULL DEFAULT 1');
+      await db.rawUpdate(
+        "UPDATE products SET updated_at = ? WHERE updated_at IS NULL OR TRIM(updated_at) = ''",
+        [nowIso],
+      );
+      await db.rawUpdate(
+        'UPDATE products SET sync_version = 1 WHERE sync_version IS NULL OR sync_version <= 0',
+      );
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_products_sync_version
+        ON products (sync_version, id)
+      ''');
+    }
+
+    if (await _tableExists(db, 'promos')) {
+      await _addColumnIfMissing(db, 'promos', 'updated_at', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'promos', 'sync_version', 'INTEGER NOT NULL DEFAULT 1');
+      await db.rawUpdate(
+        "UPDATE promos SET updated_at = ? WHERE updated_at IS NULL OR TRIM(updated_at) = ''",
+        [nowIso],
+      );
+    }
+
+    if (await _tableExists(db, 'customers')) {
+      await _addColumnIfMissing(db, 'customers', 'updated_at', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'customers', 'sync_version', 'INTEGER NOT NULL DEFAULT 1');
+      await db.rawUpdate(
+        "UPDATE customers SET updated_at = ? WHERE updated_at IS NULL OR TRIM(updated_at) = ''",
+        [nowIso],
+      );
+    }
+
+    if (await _tableExists(db, 'paired_terminals')) {
+      await _addColumnIfMissing(db, 'paired_terminals', 'terminal_code', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'paired_terminals', 'device_uuid', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'paired_terminals', 'device_secret_enc', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'paired_terminals', 'allow_auto_open_drawer', 'INTEGER NOT NULL DEFAULT 0');
+      await _addColumnIfMissing(db, 'paired_terminals', 'allow_manual_open_drawer', 'INTEGER NOT NULL DEFAULT 0');
+      await _addColumnIfMissing(db, 'paired_terminals', 'default_printer_id', 'INTEGER');
+      await db.rawUpdate('''
+        UPDATE paired_terminals
+        SET terminal_code = CASE WHEN TRIM(terminal_code) = '' THEN terminal_id ELSE terminal_code END,
+            allow_auto_open_drawer = COALESCE(allow_open_cash_drawer, 0),
+            allow_manual_open_drawer = COALESCE(allow_open_cash_drawer, 0)
+      ''');
+      await db.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_paired_terminals_device_uuid
+        ON paired_terminals (device_uuid)
+        WHERE device_uuid IS NOT NULL AND device_uuid != ''
+      ''');
+    }
+
+    if (await _tableExists(db, 'print_jobs')) {
+      await _addColumnIfMissing(db, 'print_jobs', 'invoice_number', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'print_jobs', 'job_type', "TEXT NOT NULL DEFAULT 'receipt'");
+      await _addColumnIfMissing(db, 'print_jobs', 'is_reprint', 'INTEGER NOT NULL DEFAULT 0');
+      await _addColumnIfMissing(db, 'print_jobs', 'drawer_pulse_sent', 'INTEGER NOT NULL DEFAULT 0');
+      await _addColumnIfMissing(db, 'print_jobs', 'idempotency_key', 'TEXT');
+      await _addColumnIfMissing(db, 'print_jobs', 'payload_json', "TEXT NOT NULL DEFAULT ''");
+      await db.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_print_jobs_idempotency
+        ON print_jobs (idempotency_key)
+        WHERE idempotency_key IS NOT NULL AND idempotency_key != ''
+      ''');
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_print_jobs_status_printer
+        ON print_jobs (status, printer_id, id)
+      ''');
+    }
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pairing_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash TEXT NOT NULL UNIQUE,
+        suggested_terminal_name TEXT NOT NULL DEFAULT '',
+        assigned_register_id INTEGER,
+        allow_auto_open_drawer INTEGER NOT NULL DEFAULT 0,
+        allow_manual_open_drawer INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        consumed_by_terminal_id TEXT
+      )
+    ''');
+
+    if (await _tableExists(db, 'terminal_sessions')) {
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_terminal_sessions_token_hash
+        ON terminal_sessions (session_token_hash, terminal_id)
+      ''');
+    }
+
+    if (await _tableExists(db, 'store_settings')) {
+      await db.insert(
+        'store_settings',
+        {'key': 'catalog_sync_version', 'value': '1'},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+  }
+
+  /// Increments global monotonic `catalog_sync_version` inside the active transaction
+  /// and optionally tags the modified entity row with the new `sync_version`.
+  Future<int> bumpSyncVersionTxn(
+    DatabaseExecutor db, {
+    int? productId,
+    int? promoId,
+    int? customerId,
+  }) async {
+    final rows = await db.query(
+      'store_settings',
+      where: 'key = ?',
+      whereArgs: ['catalog_sync_version'],
+      limit: 1,
+    );
+    final current = rows.isNotEmpty
+        ? (int.tryParse((rows.first['value'] ?? '1').toString()) ?? 1)
+        : 1;
+    final next = current + 1;
+    await db.insert(
+      'store_settings',
+      {'key': 'catalog_sync_version', 'value': next.toString()},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    final nowIso = DateTime.now().toIso8601String();
+    if (productId != null) {
+      await db.update(
+        'products',
+        {'updated_at': nowIso, 'sync_version': next},
+        where: 'id = ?',
+        whereArgs: [productId],
+      );
+    }
+    if (promoId != null) {
+      await db.update(
+        'promos',
+        {'updated_at': nowIso, 'sync_version': next},
+        where: 'id = ?',
+        whereArgs: [promoId],
+      );
+    }
+    if (customerId != null) {
+      await db.update(
+        'customers',
+        {'updated_at': nowIso, 'sync_version': next},
+        where: 'id = ?',
+        whereArgs: [customerId],
+      );
+    }
+    return next;
+  }
+
+  /// Hydrates a product + related units, tiered pricing & batches using an existing executor.
+  Future<ProductModel> hydrateProductTxn(
+    DatabaseExecutor db,
+    Map<String, dynamic> map,
+  ) =>
+      _hydrateProduct(db, map);
 
   Future<void> _normalizePreV5OpenShifts(Database db) async {
     final openReg1 = await db.query(
@@ -1484,6 +1660,7 @@ class DatabaseHelper {
     await _createV4NewTables(db);
     await _createV5NewTables(db);
     await _ensureV5Indexes(db);
+    await _applyV6Upgrade(db);
     await _seedInitialData(db);
   }
 
@@ -2144,12 +2321,26 @@ class DatabaseHelper {
 
   Future<int> updateUser(UserModel user) async {
     final db = await database;
-    return await db.update(
+    final rows = await db.update(
       'users',
       user.toMap(),
       where: 'id = ?',
       whereArgs: [user.id],
     );
+    if (user.id != null) {
+      // Force re-login on connected terminals when permissions, role, or PIN/status change.
+      await db.update(
+        'terminal_sessions',
+        {'revoked_at': DateTime.now().toIso8601String()},
+        where: 'cashier_id = ? AND (revoked_at IS NULL OR revoked_at = \'\')',
+        whereArgs: [user.id],
+      );
+      onMultiDeviceEvent?.call('session_revoked', {
+        'cashier_id': user.id,
+        'reason': user.isActive ? 'Hak akses / akun diperbarui' : 'Akun dinonaktifkan',
+      });
+    }
+    return rows;
   }
 
   Future<void> setUserActive(int userId, bool isActive) async {
@@ -2160,6 +2351,18 @@ class DatabaseHelper {
       where: 'id = ?',
       whereArgs: [userId],
     );
+    if (!isActive) {
+      await db.update(
+        'terminal_sessions',
+        {'revoked_at': DateTime.now().toIso8601String()},
+        where: 'cashier_id = ? AND (revoked_at IS NULL OR revoked_at = \'\')',
+        whereArgs: [userId],
+      );
+      onMultiDeviceEvent?.call('session_revoked', {
+        'cashier_id': userId,
+        'reason': 'Akun dinonaktifkan oleh Admin',
+      });
+    }
   }
 
   // ================= CASH REGISTERS & ASSIGNMENTS =================
@@ -2567,15 +2770,20 @@ class DatabaseHelper {
 
   Future<int> insertProduct(ProductModel product) async {
     final db = await database;
-    return await db.transaction((txn) async {
-      final id = await txn.insert('products', product.toMap());
-      await _saveProductRelations(txn, id, product);
-      return id;
+    int nextVer = 1;
+    final id = await db.transaction((txn) async {
+      final newId = await txn.insert('products', product.toMap());
+      await _saveProductRelations(txn, newId, product);
+      nextVer = await bumpSyncVersionTxn(txn, productId: newId);
+      return newId;
     });
+    onMultiDeviceEvent?.call('catalog_changed', {'sync_version': nextVer, 'product_id': id});
+    return id;
   }
 
   Future<void> updateProduct(ProductModel product) async {
     final db = await database;
+    int nextVer = 1;
     await db.transaction((txn) async {
       await txn.update(
         'products',
@@ -2587,7 +2795,9 @@ class DatabaseHelper {
       await txn.delete('tiered_prices', where: 'product_id = ?', whereArgs: [product.id]);
       await txn.delete('product_batches', where: 'product_id = ?', whereArgs: [product.id]);
       await _saveProductRelations(txn, product.id!, product);
+      nextVer = await bumpSyncVersionTxn(txn, productId: product.id);
     });
+    onMultiDeviceEvent?.call('catalog_changed', {'sync_version': nextVer, 'product_id': product.id});
   }
 
   Future<void> _saveProductRelations(DatabaseExecutor txn, int productId, ProductModel product) async {
@@ -2619,7 +2829,11 @@ class DatabaseHelper {
 
   Future<void> deleteProduct(int id) async {
     final db = await database;
-    await db.update('products', {'is_active': 0}, where: 'id = ?', whereArgs: [id]);
+    final nextVer = await db.transaction((txn) async {
+      await txn.update('products', {'is_active': 0}, where: 'id = ?', whereArgs: [id]);
+      return bumpSyncVersionTxn(txn, productId: id);
+    });
+    onMultiDeviceEvent?.call('catalog_changed', {'sync_version': nextVer, 'product_id': id, 'deleted': true});
   }
 
   Future<List<ProductUnitModel>> getProductUnits(int productId) async {
@@ -2738,6 +2952,7 @@ class DatabaseHelper {
       where: 'id = ?',
       whereArgs: [productId],
     );
+    await bumpSyncVersionTxn(txn, productId: productId);
 
     final stockAfter = bucket == 'sellable' ? bucketAfter : currentSellable;
     await txn.insert('inventory_movements', {
@@ -3100,6 +3315,27 @@ class DatabaseHelper {
 
       return trxId;
     });
+  }
+
+  Future<int> insertTransactionWithBroadcast(
+    TransactionModel trx, {
+    int? shiftId,
+    String? terminalId,
+    int? cashRegisterId,
+  }) async {
+    final trxId = await insertTransaction(
+      trx,
+      shiftId: shiftId,
+      terminalId: terminalId,
+      cashRegisterId: cashRegisterId,
+    );
+    final ids = trx.items.where((i) => !i.isService).map((i) => i.productId).toSet().toList();
+    onMultiDeviceEvent?.call('stock_updated', {
+      'transaction_id': trxId,
+      'invoice_number': trx.invoiceNumber,
+      'product_ids': ids,
+    });
+    return trxId;
   }
 
   /// Voids or reverses a transaction safely without mutating closed shifts retroactively.
@@ -5048,6 +5284,7 @@ class DatabaseHelper {
         whereArgs: [shiftId],
       );
     });
+    onMultiDeviceEvent?.call('shift_changed', {'shift_id': shiftId, 'status': 'closed'});
   }
 
   Future<void> adminCorrectShift({
@@ -5794,17 +6031,31 @@ class DatabaseHelper {
 
   Future<int> insertCustomer(CustomerModel customer) async {
     final db = await database;
-    return await db.insert('customers', customer.toMap());
+    late final int id;
+    final nextVer = await db.transaction((txn) async {
+      id = await txn.insert('customers', customer.toMap());
+      return bumpSyncVersionTxn(txn, customerId: id);
+    });
+    onMultiDeviceEvent?.call('customer_changed', {'sync_version': nextVer, 'customer_id': id});
+    return id;
   }
 
   Future<void> updateCustomer(CustomerModel customer) async {
     final db = await database;
-    await db.update('customers', customer.toMap(), where: 'id = ?', whereArgs: [customer.id]);
+    final nextVer = await db.transaction((txn) async {
+      await txn.update('customers', customer.toMap(), where: 'id = ?', whereArgs: [customer.id]);
+      return bumpSyncVersionTxn(txn, customerId: customer.id);
+    });
+    onMultiDeviceEvent?.call('customer_changed', {'sync_version': nextVer, 'customer_id': customer.id});
   }
 
   Future<void> deleteCustomer(int id) async {
     final db = await database;
-    await db.delete('customers', where: 'id = ?', whereArgs: [id]);
+    final nextVer = await db.transaction((txn) async {
+      await txn.delete('customers', where: 'id = ?', whereArgs: [id]);
+      return bumpSyncVersionTxn(txn);
+    });
+    onMultiDeviceEvent?.call('customer_changed', {'sync_version': nextVer, 'customer_id': id, 'deleted': true});
   }
 
   // ================= PURCHASES (RESTOCK / PEMBELIAN) & SUPPLIER DEBTS =================
@@ -6236,17 +6487,31 @@ class DatabaseHelper {
 
   Future<int> insertPromo(PromoModel promo) async {
     final db = await database;
-    return await db.insert('promos', promo.toMap());
+    late final int id;
+    final nextVer = await db.transaction((txn) async {
+      id = await txn.insert('promos', promo.toMap());
+      return bumpSyncVersionTxn(txn, promoId: id);
+    });
+    onMultiDeviceEvent?.call('promo_changed', {'sync_version': nextVer, 'promo_id': id});
+    return id;
   }
 
   Future<void> togglePromoActive(int id, bool isActive) async {
     final db = await database;
-    await db.update('promos', {'is_active': isActive ? 1 : 0}, where: 'id = ?', whereArgs: [id]);
+    final nextVer = await db.transaction((txn) async {
+      await txn.update('promos', {'is_active': isActive ? 1 : 0}, where: 'id = ?', whereArgs: [id]);
+      return bumpSyncVersionTxn(txn, promoId: id);
+    });
+    onMultiDeviceEvent?.call('promo_changed', {'sync_version': nextVer, 'promo_id': id});
   }
 
   Future<void> deletePromo(int id) async {
     final db = await database;
-    await db.delete('promos', where: 'id = ?', whereArgs: [id]);
+    final nextVer = await db.transaction((txn) async {
+      await txn.delete('promos', where: 'id = ?', whereArgs: [id]);
+      return bumpSyncVersionTxn(txn);
+    });
+    onMultiDeviceEvent?.call('promo_changed', {'sync_version': nextVer, 'promo_id': id, 'deleted': true});
   }
 
   // ================= PRINTERS CRUD =================
@@ -6262,7 +6527,11 @@ class DatabaseHelper {
       if (printer.isDefault) {
         await txn.update('printers', {'is_default': 0});
       }
-      return await txn.insert('printers', printer.toMap());
+      final newId = await txn.insert('printers', printer.toMap());
+      if (printer.isDefault && printer.connectionType != PrinterConnectionType.system) {
+        await _promotePrinterForDefaultRegistersTxn(txn, newId);
+      }
+      return newId;
     });
   }
 
@@ -6273,6 +6542,11 @@ class DatabaseHelper {
         await txn.update('printers', {'is_default': 0});
       }
       await txn.update('printers', printer.toMap(), where: 'id = ?', whereArgs: [printer.id]);
+      if (printer.isDefault &&
+          printer.id != null &&
+          printer.connectionType != PrinterConnectionType.system) {
+        await _promotePrinterForDefaultRegistersTxn(txn, printer.id!);
+      }
     });
   }
 
@@ -6281,7 +6555,21 @@ class DatabaseHelper {
     await db.transaction((txn) async {
       await txn.update('printers', {'is_default': 0});
       await txn.update('printers', {'is_default': 1}, where: 'id = ?', whereArgs: [printerId]);
+      final rows = await txn.query('printers', where: 'id = ?', whereArgs: [printerId], limit: 1);
+      if (rows.isNotEmpty &&
+          (rows.first['connection_type'] ?? '') != PrinterConnectionType.system) {
+        await _promotePrinterForDefaultRegistersTxn(txn, printerId);
+      }
     });
+  }
+
+  Future<void> _promotePrinterForDefaultRegistersTxn(Transaction txn, int printerId) async {
+    await txn.rawUpdate('''
+      UPDATE cash_registers
+      SET printer_id = ?
+      WHERE printer_id IS NULL
+         OR printer_id IN (SELECT id FROM printers WHERE connection_type = ?)
+    ''', [printerId, PrinterConnectionType.system]);
   }
 
   Future<void> deletePrinter(int printerId) async {
@@ -7077,6 +7365,10 @@ class DatabaseHelper {
       {'key': key, 'value': value},
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    if (key != 'catalog_sync_version') {
+      final ver = await bumpSyncVersionTxn(db);
+      onMultiDeviceEvent?.call('settings_changed', {'sync_version': ver, 'key': key});
+    }
   }
 
   Future<Map<String, String>> getAllSettings() async {

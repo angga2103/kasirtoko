@@ -43,12 +43,36 @@ class ServerLifecycleBridge {
 
   static Future<ServerLifecycleStatus> startForegroundServerShell({
     required String storeName,
+    int port = 8443,
   }) async {
     if (!Platform.isAndroid) return const ServerLifecycleStatus();
     try {
       final res = await _channel.invokeMethod<Map<dynamic, dynamic>>(
         'startForegroundServerShell',
-        {'storeName': storeName},
+        {'storeName': storeName, 'port': port},
+      );
+      return ServerLifecycleStatus.fromMap(res);
+    } on MissingPluginException {
+      return const ServerLifecycleStatus();
+    }
+  }
+
+  static Future<ServerLifecycleStatus> updateForegroundServerInfo({
+    required String storeName,
+    int port = 8443,
+    int connectedCount = 0,
+    bool serverLive = false,
+  }) async {
+    if (!Platform.isAndroid) return const ServerLifecycleStatus();
+    try {
+      final res = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+        'updateForegroundServerInfo',
+        {
+          'storeName': storeName,
+          'port': port,
+          'connectedCount': connectedCount,
+          'serverLive': serverLive,
+        },
       );
       return ServerLifecycleStatus.fromMap(res);
     } on MissingPluginException {

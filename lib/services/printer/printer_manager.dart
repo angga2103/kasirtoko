@@ -117,6 +117,7 @@ class PrinterManager {
     required ReceiptConfigModel receiptConfig,
     String? logoPath,
     bool isReprint = false,
+    bool? overrideOpenDrawer,
   }) async {
     final target = printer ??
         PrinterDeviceModel(
@@ -147,8 +148,12 @@ class PrinterManager {
       );
     }
 
+    final shouldOpenDrawer = !isReprint &&
+        transaction.paymentMethod == 'tunai' &&
+        (overrideOpenDrawer ?? target.openDrawer);
+
     final adapter = adapterFor(target);
-    final bytes = EscPosGenerator.buildTransactionReceipt(
+    final receiptBytesWithoutDrawer = EscPosGenerator.buildTransactionReceipt(
       transaction: transaction,
       storeName: storeName,
       storeAddress: storeAddress,
@@ -157,13 +162,26 @@ class PrinterManager {
       charWidth: target.escCharWidth,
       logoPath: logoPath,
       autoCut: target.autoCut,
-      openDrawer: !isReprint && target.openDrawer && transaction.paymentMethod == 'tunai',
+      openDrawer: false,
     );
 
     PrinterOperationResult lastResult =
         PrinterOperationResult(success: false, message: 'Tidak ada salinan tercetak');
     for (int i = 0; i < copies; i++) {
-      lastResult = await adapter.printRawBytes(bytes);
+      final bytesToSend = (i == 0 && shouldOpenDrawer)
+          ? EscPosGenerator.buildTransactionReceipt(
+              transaction: transaction,
+              storeName: storeName,
+              storeAddress: storeAddress,
+              storePhone: storePhone,
+              config: receiptConfig,
+              charWidth: target.escCharWidth,
+              logoPath: logoPath,
+              autoCut: target.autoCut,
+              openDrawer: true,
+            )
+          : receiptBytesWithoutDrawer;
+      lastResult = await adapter.printRawBytes(bytesToSend);
       if (!lastResult.success) return lastResult;
     }
     return lastResult;
