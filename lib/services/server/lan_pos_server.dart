@@ -516,7 +516,9 @@ class LanPosServer {
       return null;
     }
 
-    unawaited(_dao.touchTerminalLastSeen(terminal.terminalId));
+    if (isRunning) {
+      unawaited(_dao.touchTerminalLastSeen(terminal.terminalId));
+    }
     return _AuthenticatedDeviceContext(terminal: terminal, deviceSecret: deviceSecret);
   }
 
@@ -1025,6 +1027,12 @@ class LanPosServer {
         actualCash - target.expectedCash,
         note,
       );
+      unawaited(_broadcastWs('shift_changed', {
+        'shift_id': shiftId,
+        'status': 'closed',
+        'cash_register_id': target.cashRegisterId,
+        'cashier_id': target.cashierId,
+      }));
       await _sendOk(req, {
         'closed': true,
         'shift_id': shiftId,

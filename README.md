@@ -84,15 +84,22 @@ Aplikasi ini tidak memerlukan koneksi internet untuk beroperasi sehari-hari, beb
 
 ---
 
-## Otomatisasi Build APK (GitHub Actions CI/CD)
+## Otomatisasi Build & Release APK (GitHub Actions CI/CD)
 
-Proyek ini telah dikonfigurasi dengan alur kerja GitHub Actions pada [`.github/workflows/build.yml`](.github/workflows/build.yml).
+Proyek ini menggunakan alur kerja GitHub Actions pada direktori `.github/workflows/`:
+- [`.github/workflows/ci.yml`](.github/workflows/ci.yml): Berjalan pada `push` (`main`, `feat/**`), `pull_request` ke `main`, dan `workflow_dispatch` untuk menjalankan `flutter analyze --no-pub --no-fatal-infos`, seluruh `flutter test --no-pub -r expanded -j 1`, serta memverifikasi build APK Debug.
+- [`.github/workflows/release.yml`](.github/workflows/release.yml): Berjalan pada push tag `v*` atau `workflow_dispatch`, mewajibkan keempat secret permanent signing (`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`), membangun `KasirToko-Admin-vX.Y.Z-release.apk` & `.aab`, memverifikasi sertifikat via `apksigner` / `aapt2`, serta menerbitkan GitHub Release resmi lengkap dengan checksum `.sha256`.
 
-Setiap kali kode di-push ke branch `main`, GitHub Actions akan:
-1. Menyiapkan environment Ubuntu & Java 17 Temurin.
-2. Mengunduh Flutter SDK dan mengompilasi dependency.
-3. Melakukan build release APK Android (`flutter build apk --release --no-tree-shake-icons`).
-4. Mengunggah file `.apk` siap pakai ke tab **Artifacts** di repositori GitHub Anda.
+Panduan operasional multi-device, signing, branding, kompatibilitas update, dan instalasi tersedia pada folder [`docs/`](docs/):
+- [`docs/ANDROID_SIGNING_GUIDE.md`](docs/ANDROID_SIGNING_GUIDE.md)
+- [`docs/RELEASE_BUILD_GUIDE.md`](docs/RELEASE_BUILD_GUIDE.md)
+- [`docs/UPDATE_COMPATIBILITY.md`](docs/UPDATE_COMPATIBILITY.md)
+- [`docs/APP_BRANDING_GUIDE.md`](docs/APP_BRANDING_GUIDE.md)
+- [`docs/ADMIN_STAFF_INSTALLATION_GUIDE.md`](docs/ADMIN_STAFF_INSTALLATION_GUIDE.md)
+- [`docs/GITHUB_ACTIONS_GUIDE.md`](docs/GITHUB_ACTIONS_GUIDE.md)
+- [`docs/FIELD_TEST_CHECKLIST.md`](docs/FIELD_TEST_CHECKLIST.md)
+- [`docs/FINAL_QA_REPORT.md`](docs/FINAL_QA_REPORT.md)
+- [`docs/FINAL_RELEASE_REPORT.md`](docs/FINAL_RELEASE_REPORT.md)
 
 ---
 

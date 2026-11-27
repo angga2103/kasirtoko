@@ -1,18 +1,13 @@
-name: Build KasirToko Android APK
+name: Build KasirToko Verification (Legacy Trigger Guarded)
 
 on:
-  push:
-    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  build:
-    name: Build Android Release APK
+  verify-pr:
+    name: Verify Debug APK & Test Suite on Main PR
     runs-on: ubuntu-latest
 
     steps:
@@ -35,89 +30,26 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Doctor check
-        run: flutter doctor -v
-
-      - name: Get Dependencies
-        run: flutter pub get
-
       - name: Install SQLite3 for FFI Integration Tests
         run: |
           sudo apt-get update
           sudo apt-get install -y libsqlite3-0 libsqlite3-dev
 
-      - name: Run Unit & Integration Tests
-        run: flutter test -r expanded
+      - name: Get Dependencies
+        run: flutter pub get
 
-      - name: Build Android Release APK
-        id: build_apk
-        run: |
-          set -o pipefail
-          flutter build apk --release --no-tree-shake-icons --android-skip-build-dependency-validation --verbose 2>&1 | tee build_log.txt
+      - name: Static Analysis
+        run: flutter analyze --no-pub --no-fatal-infos
 
-      - name: Upload Build Log
-        if: always()
+      - name: Run Full Test Suite
+        run: flutter test --no-pub -r expanded -j 1
+
+      - name: Build Verified Debug APK
+        run: flutter build apk --debug --no-tree-shake-icons --android-skip-build-dependency-validation
+
+      - name: Upload Debug Verification Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Build-Diagnostics-Log
-          path: build_log.txt
-          retention-days: 7
-
-      - name: Push Diagnostics Branch on Failure
-        if: failure()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout --orphan diagnostics
-          git rm -rf . || true
-          if [ -f build_log.txt ]; then
-            tail -n 400 build_log.txt > build_error.log
-            git add build_error.log
-            git commit -m "ci: capture build error log"
-            git push -f origin diagnostics
-          fi
-
-      - name: Prepare APK for Artifact & Release
-        run: |
-          echo "### Locating generated APK..."
-          find build -type f -name "*.apk"
-          APK_FILE=$(find build -type f -name "*release*.apk" | head -n 1)
-          if [ -z "$APK_FILE" ]; then
-            echo "::error::No release APK found!"
-            exit 1
-          fi
-          echo "Found APK: $APK_FILE"
-          mkdir -p build/app/outputs/flutter-apk
-          cp "$APK_FILE" build/app/outputs/flutter-apk/KasirToko-v2.2.0.apk
-          echo "## ✅ Build Success!" >> $GITHUB_STEP_SUMMARY
-          echo "APK successfully created: \`KasirToko-v2.2.0.apk\` ($(du -h "$APK_FILE" | cut -f1))" >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: KasirToko-Release-APK
-          path: build/app/outputs/flutter-apk/KasirToko-v2.2.0.apk
+          name: KasirToko-Admin-PR-Debug-APK
+          path: build/app/outputs/flutter-apk/app-debug.apk
           retention-days: 14
-
-      - name: Publish to GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: github.ref == 'refs/heads/main'
-        with:
-          tag_name: v2.2.0
-          name: "KasirToko Universal POS v2.2.0 - Forensic Return & Ledger APK"
-          make_latest: true
-          body: |
-            ## KasirToko Universal Android POS (Offline-First) v2.2.0
-
-            Unduh file `KasirToko-v2.2.0.apk` di bawah ini dan pasang langsung di HP atau Tablet Android kasir Anda.
-
-            ### Pembaruan Utama v2.2.0 (Audit & Refactoring Sistem Retur):
-            - **Perbaikan Total Tukar Barang (`return_in` + `exchange_out`):** Tukar barang dengan SKU sama maupun berbeda kini selalu memotong stok barang pengganti secara atomik, menghitung selisih harga (bayar tambahan / kembalian / saldo kredit), dan menolak transaksi bila stok pengganti tidak mencukupi.
-            - **Pemisahan Kondisi, Perlakuan Stok & Karantina:** Barang retur dipisahkan jelas antara kondisi (Baik/Perlu Periksa/Kemasan Rusak/Cacat/Rusak), perlakuan stok (Stok Jual/Karantina/Rusak/Tanpa Mutasi), serta mendukung inspeksi & pelepasan karantina.
-            - **Inventory Movements & Customer Credit Ledger (SQLite v4 Non-Destruktif):** Setiap mutasi stok (`sale_out`, `return_in`, `exchange_out`, `quarantine_in`, `quarantine_release`, `damaged_in`, `return_void_reverse`, dll.) serta Saldo Kredit Pelanggan (terpisah tegas dari Piutang Kasbon) terekam di buku besar yang dapat diaudit dan dipakai kembali saat checkout POS.
-            - **Idempotency, Pembatalan Retur (`voidReturnOrder`) & Rekonsiliasi Legacy:** Proteksi request ganda, pembatalan retur atomik yang membalik stok, pengganti, kredit, utang & kas, serta alat inspeksi data retur lama.
-          files: build/app/outputs/flutter-apk/KasirToko-v2.2.0.apk
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

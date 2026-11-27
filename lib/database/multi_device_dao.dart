@@ -370,13 +370,17 @@ class MultiDeviceDao {
   }
 
   Future<void> touchTerminalLastSeen(String terminalId) async {
-    final db = await _dbHelper.database;
-    await db.update(
-      'paired_terminals',
-      {'last_seen_at': DateTime.now().toIso8601String()},
-      where: 'terminal_id = ?',
-      whereArgs: [terminalId],
-    );
+    try {
+      final db = await _dbHelper.database;
+      await db.update(
+        'paired_terminals',
+        {'last_seen_at': DateTime.now().toIso8601String()},
+        where: 'terminal_id = ?',
+        whereArgs: [terminalId],
+      );
+    } catch (_) {
+      // Best-effort telemetry; never fail active requests if DB is closing/stopping.
+    }
   }
 
   Future<void> updateTerminalPolicy({

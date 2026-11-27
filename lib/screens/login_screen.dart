@@ -251,7 +251,7 @@ class _LoginScreenState extends State<LoginScreen> {
         Container(
           width: isWideTablet ? 96 : 76,
           height: isWideTablet ? 96 : 76,
-          padding: hasLogo ? EdgeInsets.zero : const EdgeInsets.all(16),
+          padding: EdgeInsets.zero,
           decoration: BoxDecoration(
             color: Colors.white,
             shape: BoxShape.circle,
@@ -267,7 +267,12 @@ class _LoginScreenState extends State<LoginScreen> {
           clipBehavior: Clip.antiAlias,
           child: hasLogo
               ? Image.file(logoFile, fit: BoxFit.contain)
-              : const Icon(Icons.point_of_sale_rounded, size: 42, color: AppTheme.primaryGreen),
+              : Image.asset(
+                  'assets/branding/kasirtoko_admin_logo.png',
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) =>
+                      const Icon(Icons.point_of_sale_rounded, size: 42, color: AppTheme.primaryGreen),
+                ),
         ),
         const SizedBox(height: 14),
         Text(

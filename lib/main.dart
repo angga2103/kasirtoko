@@ -54,7 +54,7 @@ class KasirTokoApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => PosServerProvider()..initialize()),
       ],
       child: MaterialApp(
-        title: 'KasirToko Universal POS',
+        title: 'KasirToko Admin POS',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.lightTheme,
         home: const LoginScreen(),

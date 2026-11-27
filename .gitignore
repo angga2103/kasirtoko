@@ -43,6 +43,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/build/
 
 # Widget Preview related
 .widget_preview/
@@ -54,6 +55,9 @@ app.*.map.json
 *.p12
 *.pem
 *.key
+*.b64
+*.aesgcm
+SIGNING_RECOVERY.txt
 *.db
 *.db-wal
 *.db-shm
