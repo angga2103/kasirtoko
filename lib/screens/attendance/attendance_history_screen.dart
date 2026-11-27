@@ -67,10 +67,11 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     value: status,
+                    isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Status Kedisiplinan Terkoreksi'),
                     items: const [
-                      DropdownMenuItem(value: 'tepat_waktu', child: Text('TEPAT WAKTU')),
-                      DropdownMenuItem(value: 'terlambat', child: Text('TERLAMBAT')),
+                      DropdownMenuItem(value: 'tepat_waktu', child: Text('TEPAT WAKTU', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                      DropdownMenuItem(value: 'terlambat', child: Text('TERLAMBAT', maxLines: 1, overflow: TextOverflow.ellipsis)),
                     ],
                     onChanged: (v) {
                       setDState(() {

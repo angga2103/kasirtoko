@@ -16,9 +16,11 @@ class ImagePickerHelper {
   }) async {
     final source = await showModalBottomSheet<String>(
       context: context,
+      isScrollControlled: true,
+      constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.85),
       builder: (ctx) {
         return SafeArea(
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
             child: Column(
               mainAxisSize: MainAxisSize.min,

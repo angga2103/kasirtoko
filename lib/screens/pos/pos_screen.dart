@@ -149,8 +149,10 @@ class _PosScreenState extends State<PosScreen> {
 
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
+      constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.85),
       builder: (ctx) => SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -197,9 +199,10 @@ class _PosScreenState extends State<PosScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
         title: const Text('Pilih / Isi Pelanggan'),
-        content: SizedBox(
-          width: 400,
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400),
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -279,9 +282,10 @@ class _PosScreenState extends State<PosScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDState) => AlertDialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
           title: const Text('Diskon & Promo Transaksi'),
-          content: SizedBox(
-            width: 400,
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 400),
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -513,7 +517,11 @@ class _PosScreenState extends State<PosScreen> {
                         crossAxisCount: gridCols,
                         crossAxisSpacing: 10,
                         mainAxisSpacing: 10,
-                        childAspectRatio: isTablet ? 0.78 : 0.68,
+                        mainAxisExtent: AppBreakpoints.scaledExtent(
+                          context,
+                          fixedHeight: isTablet ? 148 : 154,
+                          textHeight: 74,
+                        ),
                       ),
                       itemCount: productProv.products.length,
                       itemBuilder: (context, index) {
@@ -1115,16 +1123,17 @@ class _CartPanelWidget extends StatelessWidget {
                   if (pos.taxAmount > 0)
                     _totalRow('Pajak (${pos.taxRate.toStringAsFixed(0)}%)', CurrencyHelper.format(pos.taxAmount)),
                   const Divider(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('TOTAL', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                      Text(
+                  AppBreakpoints.spaceBetweenRow(
+                    const Text('TOTAL', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerRight,
+                      child: Text(
                         CurrencyHelper.format(pos.grandTotal),
                         style: const TextStyle(
                             fontSize: 19, fontWeight: FontWeight.bold, color: AppTheme.primaryGreen),
                       ),
-                    ],
+                    ),
                   ),
                   const SizedBox(height: 10),
                   SizedBox(
@@ -1147,12 +1156,18 @@ class _CartPanelWidget extends StatelessWidget {
   Widget _totalRow(String l, String r, {Color? color}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 1.5),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(l, style: TextStyle(fontSize: 12, color: color ?? AppTheme.textMuted)),
-          Text(r, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color ?? AppTheme.textDark)),
-        ],
+      child: AppBreakpoints.spaceBetweenRow(
+        Text(
+          l,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontSize: 12, color: color ?? AppTheme.textMuted),
+        ),
+        Text(
+          r,
+          textAlign: TextAlign.right,
+          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color ?? AppTheme.textDark),
+        ),
       ),
     );
   }

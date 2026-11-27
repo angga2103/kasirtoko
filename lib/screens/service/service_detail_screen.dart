@@ -55,10 +55,11 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
         title: const Text('Tambah Sparepart dari Stok'),
         content: SizedBox(
-          width: 420,
-          height: 360,
+          width: AppBreakpoints.boundedDialogWidth(ctx, maxWidth: 420),
+          height: (MediaQuery.sizeOf(ctx).height * 0.55).clamp(180.0, 360.0),
           child: physicalProducts.isEmpty
               ? const Center(child: Text('Tidak ada stok sparepart/produk tersedia.'))
               : ListView.builder(
@@ -105,33 +106,39 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDState) => AlertDialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
           title: const Text('Pembayaran / Pelunasan Servis'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Total Tagihan: ${CurrencyHelper.format(_order!.totalCost)}'),
-              Text('Sudah Dibayar: ${CurrencyHelper.format(_order!.paidAmount)}'),
-              Text('Sisa Pembayaran: ${CurrencyHelper.format(rem)}',
-                  style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.accentRed)),
-              const SizedBox(height: 12),
-              TextField(
-                controller: amountCtrl,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Nominal Bayar', prefixText: 'Rp '),
-              ),
-              const SizedBox(height: 10),
-              DropdownButtonFormField<String>(
-                value: method,
-                decoration: const InputDecoration(labelText: 'Metode Pembayaran'),
-                items: const [
-                  DropdownMenuItem(value: 'tunai', child: Text('Tunai (Masuk Laci Kasir)')),
-                  DropdownMenuItem(value: 'qris', child: Text('QRIS')),
-                  DropdownMenuItem(value: 'transfer', child: Text('Transfer Bank')),
-                ],
-                onChanged: (v) => setDState(() => method = v ?? 'tunai'),
-              ),
-            ],
+          content: AppBreakpoints.scrollableDialogContent(
+            context,
+            maxWidth: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Total Tagihan: ${CurrencyHelper.format(_order!.totalCost)}'),
+                Text('Sudah Dibayar: ${CurrencyHelper.format(_order!.paidAmount)}'),
+                Text('Sisa Pembayaran: ${CurrencyHelper.format(rem)}',
+                    style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.accentRed)),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: amountCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Nominal Bayar', prefixText: 'Rp '),
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  value: method,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Metode Pembayaran'),
+                  items: const [
+                    DropdownMenuItem(value: 'tunai', child: Text('Tunai (Masuk Laci Kasir)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'qris', child: Text('QRIS', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'transfer', child: Text('Transfer Bank', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  ],
+                  onChanged: (v) => setDState(() => method = v ?? 'tunai'),
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Batal')),
@@ -233,9 +240,13 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
                       const SizedBox(height: 8),
                       DropdownButtonFormField<String>(
                         value: o.status,
+                        isExpanded: true,
                         decoration: const InputDecoration(isDense: true),
                         items: ServiceStatus.all
-                            .map((s) => DropdownMenuItem(value: s, child: Text(ServiceStatus.label(s))))
+                            .map((s) => DropdownMenuItem(
+                                  value: s,
+                                  child: Text(ServiceStatus.label(s), maxLines: 1, overflow: TextOverflow.ellipsis),
+                                ))
                             .toList(),
                         onChanged: (newSt) async {
                           if (newSt == null || newSt == o.status) return;
@@ -262,8 +273,11 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text('${o.deviceType} ${o.brand} ${o.model}',
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          Expanded(
+                            child: Text('${o.deviceType} ${o.brand} ${o.model}',
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          ),
+                          const SizedBox(width: 8),
                           if (o.customerPhone.isNotEmpty)
                             OutlinedButton.icon(
                               icon: const Icon(Icons.share_rounded, size: 16, color: Colors.green),

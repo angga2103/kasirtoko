@@ -157,8 +157,10 @@ class _HomeScreenState extends State<HomeScreen> {
   ) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
+      constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.85),
       builder: (ctx) => SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -238,8 +240,10 @@ class _HomeScreenState extends State<HomeScreen> {
     final auth = Provider.of<AuthProvider>(context, listen: false);
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
+      constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.85),
       builder: (ctx) => SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -469,8 +473,10 @@ class _HomeScreenState extends State<HomeScreen> {
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -480,10 +486,11 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     child: Text(
                       settings.businessType.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.w600),
                     ),
                   ),
-                  const SizedBox(width: 8),
                   InkWell(
                     onTap: () => _pushAndRefresh(const ShiftScreen()),
                     child: Container(
@@ -616,7 +623,7 @@ class _HomeScreenState extends State<HomeScreen> {
       crossAxisCount: crossCount,
       crossAxisSpacing: 10,
       mainAxisSpacing: 10,
-      childAspectRatio: AppBreakpoints.isTablet(context) ? 2.1 : 1.75,
+      mainAxisExtent: AppBreakpoints.scaledExtent(context, fixedHeight: 42, textHeight: 58),
       children: cards,
     );
   }
@@ -692,7 +699,7 @@ class _HomeScreenState extends State<HomeScreen> {
       crossAxisCount: AppBreakpoints.quickActionGridCount(context),
       crossAxisSpacing: 8,
       mainAxisSpacing: 8,
-      childAspectRatio: 0.96,
+      mainAxisExtent: AppBreakpoints.scaledExtent(context, fixedHeight: 56, textHeight: 28),
       children: actions,
     );
   }
@@ -850,10 +857,12 @@ class _HomeScreenState extends State<HomeScreen> {
         GridView.count(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          crossAxisCount: AppBreakpoints.isTablet(context) ? 4 : 3,
+          crossAxisCount: AppBreakpoints.isTablet(context)
+              ? 4
+              : (MediaQuery.sizeOf(context).width < 360 ? 2 : 3),
           crossAxisSpacing: 8,
           mainAxisSpacing: 8,
-          childAspectRatio: 1.0,
+          mainAxisExtent: AppBreakpoints.scaledExtent(context, fixedHeight: 60, textHeight: 42),
           children: tiles,
         ),
       ],
@@ -923,7 +932,12 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               Icon(Icons.history_rounded, size: 18, color: AppTheme.primaryGreen),
               SizedBox(width: 6),
-              Text('Aktivitas Terbaru', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              Expanded(
+                child: Text(
+                  'Aktivitas Terbaru',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                ),
+              ),
             ],
           ),
           const Divider(height: 16),

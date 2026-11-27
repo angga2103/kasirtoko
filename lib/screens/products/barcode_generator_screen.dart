@@ -180,49 +180,40 @@ class _BarcodeGeneratorScreenState extends State<BarcodeGeneratorScreen> {
                 ),
                 const SizedBox(height: 10),
 
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: TextField(
-                        controller: _customNameCtrl,
-                        decoration: const InputDecoration(labelText: 'Nama Produk di Stiker'),
-                        onChanged: (_) => setState(() {}),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: TextField(
-                        controller: _customSkuCtrl,
-                        decoration: const InputDecoration(labelText: 'SKU'),
-                        onChanged: (_) => setState(() {}),
-                      ),
-                    ),
-                  ],
+                AppBreakpoints.buildResponsivePair(
+                  minPairWidth: 330,
+                  spacing: 8,
+                  firstFlex: 2,
+                  secondFlex: 1,
+                  first: TextField(
+                    controller: _customNameCtrl,
+                    decoration: const InputDecoration(labelText: 'Nama Produk di Stiker'),
+                    onChanged: (_) => setState(() {}),
+                  ),
+                  second: TextField(
+                    controller: _customSkuCtrl,
+                    decoration: const InputDecoration(labelText: 'SKU'),
+                    onChanged: (_) => setState(() {}),
+                  ),
                 ),
                 const SizedBox(height: 10),
 
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 3,
-                      child: TextField(
-                        controller: _customBarcodeCtrl,
-                        decoration: const InputDecoration(labelText: 'Data Barcode / QR *'),
-                        onChanged: (_) => setState(() {}),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      flex: 2,
-                      child: TextField(
-                        controller: _customPriceCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(labelText: 'Harga', prefixText: 'Rp '),
-                        onChanged: (_) => setState(() {}),
-                      ),
-                    ),
-                  ],
+                AppBreakpoints.buildResponsivePair(
+                  minPairWidth: 330,
+                  spacing: 8,
+                  firstFlex: 3,
+                  secondFlex: 2,
+                  first: TextField(
+                    controller: _customBarcodeCtrl,
+                    decoration: const InputDecoration(labelText: 'Data Barcode / QR *'),
+                    onChanged: (_) => setState(() {}),
+                  ),
+                  second: TextField(
+                    controller: _customPriceCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Harga', prefixText: 'Rp '),
+                    onChanged: (_) => setState(() {}),
+                  ),
                 ),
                 const SizedBox(height: 12),
 
@@ -254,10 +245,10 @@ class _BarcodeGeneratorScreenState extends State<BarcodeGeneratorScreen> {
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Ukuran Kertas & Mode Layout'),
                   items: const [
-                    DropdownMenuItem(value: '40x30', child: Text('40 × 30 mm (Stiker Thermal)')),
-                    DropdownMenuItem(value: '50x30', child: Text('50 × 30 mm (Stiker Thermal Lebar)')),
-                    DropdownMenuItem(value: '58mm', child: Text('58 × 35 mm (Roll Thermal 58mm)')),
-                    DropdownMenuItem(value: 'a4_grid', child: Text('Kertas Stiker A4 Grid 3×7 (Laser / Inkjet PDF)')),
+                    DropdownMenuItem(value: '40x30', child: Text('40 × 30 mm (Stiker Thermal)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: '50x30', child: Text('50 × 30 mm (Stiker Thermal Lebar)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: '58mm', child: Text('58 × 35 mm (Roll Thermal 58mm)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'a4_grid', child: Text('Kertas Stiker A4 Grid 3×7 (Laser / Inkjet PDF)', maxLines: 1, overflow: TextOverflow.ellipsis)),
                   ],
                   onChanged: (v) => setState(() => _labelPreset = v ?? '40x30'),
                 ),
@@ -270,7 +261,7 @@ class _BarcodeGeneratorScreenState extends State<BarcodeGeneratorScreen> {
                     items: [
                       const DropdownMenuItem<int?>(
                         value: null,
-                        child: Text('Android Print Service / PDF Roll'),
+                        child: Text('Android Print Service / PDF Roll', maxLines: 1, overflow: TextOverflow.ellipsis),
                       ),
                       ...printerProv.printers.map((p) => DropdownMenuItem<int?>(
                             value: p.id,

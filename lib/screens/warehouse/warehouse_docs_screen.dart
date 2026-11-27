@@ -283,10 +283,11 @@ class _WarehouseDocFormScreenState extends State<WarehouseDocFormScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
         title: const Text('Pilih Pelanggan'),
         content: SizedBox(
-          width: 380,
-          height: 300,
+          width: AppBreakpoints.boundedDialogWidth(ctx, maxWidth: 400),
+          height: (MediaQuery.sizeOf(ctx).height * 0.5).clamp(160.0, 300.0),
           child: ListView.builder(
             itemCount: customers.length,
             itemBuilder: (_, i) {
@@ -316,10 +317,11 @@ class _WarehouseDocFormScreenState extends State<WarehouseDocFormScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
         title: const Text('Pilih Produk dari Katalog'),
         content: SizedBox(
-          width: 400,
-          height: 360,
+          width: AppBreakpoints.boundedDialogWidth(ctx, maxWidth: 420),
+          height: (MediaQuery.sizeOf(ctx).height * 0.55).clamp(180.0, 360.0),
           child: ListView.builder(
             itemCount: products.length,
             itemBuilder: (_, i) {

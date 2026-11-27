@@ -81,15 +81,16 @@ class _EmployeeManagementScreenState extends State<EmployeeManagementScreen> {
                               color: u.isActive ? AppTheme.primaryGreen : Colors.grey,
                             ),
                     ),
-                    title: Row(
+                    title: Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        Expanded(
-                          child: Text(
-                            u.name,
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              decoration: u.isActive ? null : TextDecoration.lineThrough,
-                            ),
+                        Text(
+                          u.name,
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            decoration: u.isActive ? null : TextDecoration.lineThrough,
                           ),
                         ),
                         Container(
@@ -102,6 +103,8 @@ class _EmployeeManagementScreenState extends State<EmployeeManagementScreen> {
                           ),
                           child: Text(
                             u.isActive ? u.roleDisplay : 'NONAKTIF',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.bold,
@@ -344,47 +347,43 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
                           ],
                         ),
                         const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: TextFormField(
-                                controller: _passwordCtrl,
-                                obscureText: true,
-                                decoration: InputDecoration(
-                                  labelText: isEdit ? 'Password Baru (Opsional)' : 'Password *',
-                                  helperText: 'Disimpan ter-enkripsi (hash + salt)',
-                                ),
-                                validator: (v) {
-                                  if (!isEdit && (v == null || v.trim().length < 4)) {
-                                    return 'Min. 4 karakter';
-                                  }
-                                  return null;
-                                },
-                              ),
+                        AppBreakpoints.buildResponsivePair(
+                          minPairWidth: 360,
+                          spacing: 10,
+                          first: TextFormField(
+                            controller: _passwordCtrl,
+                            obscureText: true,
+                            decoration: InputDecoration(
+                              labelText: isEdit ? 'Password Baru (Opsional)' : 'Password *',
+                              helperText: 'Disimpan ter-enkripsi (hash + salt)',
                             ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: TextFormField(
-                                controller: _pinCtrl,
-                                keyboardType: TextInputType.number,
-                                maxLength: 6,
-                                decoration: InputDecoration(
-                                  labelText: isEdit ? 'PIN Baru (4-6 digit)' : 'PIN Cepat (4-6 digit)',
-                                  counterText: '',
-                                ),
-                              ),
+                            validator: (v) {
+                              if (!isEdit && (v == null || v.trim().length < 4)) {
+                                return 'Min. 4 karakter';
+                              }
+                              return null;
+                            },
+                          ),
+                          second: TextFormField(
+                            controller: _pinCtrl,
+                            keyboardType: TextInputType.number,
+                            maxLength: 6,
+                            decoration: InputDecoration(
+                              labelText: isEdit ? 'PIN Baru (4-6 digit)' : 'PIN Cepat (4-6 digit)',
+                              counterText: '',
                             ),
-                          ],
+                          ),
                         ),
                         const SizedBox(height: 12),
                         DropdownButtonFormField<String>(
                           value: _role,
+                          isExpanded: true,
                           decoration: const InputDecoration(labelText: 'Level / Role Karyawan'),
                           items: AppRoles.all
                               .where((r) => auth.isOwner || r != AppRoles.owner)
                               .map((r) => DropdownMenuItem(
                                     value: r,
-                                    child: Text(AppRoles.displayName(r)),
+                                    child: Text(AppRoles.displayName(r), maxLines: 1, overflow: TextOverflow.ellipsis),
                                   ))
                               .toList(),
                           onChanged: isOwnerTarget && isEdit && !auth.isOwner

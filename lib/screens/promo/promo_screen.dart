@@ -75,9 +75,9 @@ class _PromoScreenState extends State<PromoScreen> {
                       value: promoType,
                       isExpanded: true,
                       items: const [
-                        DropdownMenuItem(value: 'diskon_persen', child: Text('Diskon Persen (%)')),
-                        DropdownMenuItem(value: 'potongan_nominal', child: Text('Potongan Harga (Rp)')),
-                        DropdownMenuItem(value: 'beli_x_gratis_y', child: Text('Beli X Gratis Y')),
+                        DropdownMenuItem(value: 'diskon_persen', child: Text('Diskon Persen (%)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                        DropdownMenuItem(value: 'potongan_nominal', child: Text('Potongan Harga (Rp)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                        DropdownMenuItem(value: 'beli_x_gratis_y', child: Text('Beli X Gratis Y', maxLines: 1, overflow: TextOverflow.ellipsis)),
                       ],
                       onChanged: (val) {
                         if (val != null) setDialogState(() => promoType = val);
@@ -116,7 +116,7 @@ class _PromoScreenState extends State<PromoScreen> {
                         items: [
                           const DropdownMenuItem<ProductModel?>(
                             value: null,
-                            child: Text('Berlaku Otomatis / Item Termurah'),
+                            child: Text('Berlaku Otomatis / Item Termurah', maxLines: 1, overflow: TextOverflow.ellipsis),
                           ),
                           ...products.map((p) => DropdownMenuItem<ProductModel?>(
                                 value: p,

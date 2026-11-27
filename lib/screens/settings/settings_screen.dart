@@ -105,11 +105,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           final assigns = settingsProv.assignments;
           final users = authProv.activeUsers;
           return AlertDialog(
+            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
             title: const Text('Kelola Laci Kas & Penugasan'),
-            content: SizedBox(
-              width: 520,
-              child: SingleChildScrollView(
-                child: Column(
+            content: AppBreakpoints.scrollableDialogContent(
+              dCtx,
+              maxWidth: 520,
+              child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -126,24 +127,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
                     const Divider(),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: codeCtrl,
-                            decoration: const InputDecoration(labelText: 'Kode Laci (cth: REG-02)'),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          flex: 2,
-                          child: TextField(
-                            controller: nameCtrl,
-                            decoration: const InputDecoration(labelText: 'Nama Laci Kas'),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        ElevatedButton(
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final codeField = TextField(
+                          controller: codeCtrl,
+                          decoration: const InputDecoration(labelText: 'Kode Laci (cth: REG-02)'),
+                        );
+                        final nameField = TextField(
+                          controller: nameCtrl,
+                          decoration: const InputDecoration(labelText: 'Nama Laci Kas'),
+                        );
+                        final addBtn = ElevatedButton(
                           onPressed: () async {
                             final code = codeCtrl.text.trim().toUpperCase();
                             final name = nameCtrl.text.trim();
@@ -165,8 +159,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             }
                           },
                           child: const Text('Tambah'),
-                        ),
-                      ],
+                        );
+                        if (constraints.maxWidth < 380) {
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(child: codeField),
+                                  const SizedBox(width: 8),
+                                  Expanded(flex: 2, child: nameField),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              addBtn,
+                            ],
+                          );
+                        }
+                        return Row(
+                          children: [
+                            Expanded(child: codeField),
+                            const SizedBox(width: 8),
+                            Expanded(flex: 2, child: nameField),
+                            const SizedBox(width: 8),
+                            addBtn,
+                          ],
+                        );
+                      },
                     ),
                     const Divider(height: 24),
                     const Text('Aturan Assignment (terminal+kasir > kasir > terminal)',
@@ -198,47 +217,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const SizedBox(height: 8),
                     DropdownButtonFormField<int>(
                       initialValue: selectedRegId,
+                      isExpanded: true,
                       decoration: const InputDecoration(labelText: 'Pilih Laci Kas'),
                       items: regs
-                          .map((r) => DropdownMenuItem(value: r.id, child: Text('${r.registerCode} (${r.name})')))
+                          .map((r) => DropdownMenuItem(
+                                value: r.id,
+                                child: Text('${r.registerCode} (${r.name})', maxLines: 1, overflow: TextOverflow.ellipsis),
+                              ))
                           .toList(),
                       onChanged: (v) => setDState(() => selectedRegId = v),
                     ),
                     const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: termCtrl,
-                            decoration: const InputDecoration(labelText: 'Terminal ID (opsional)'),
+                    AppBreakpoints.buildResponsivePair(
+                      minPairWidth: 380,
+                      spacing: 8,
+                      first: TextField(
+                        controller: termCtrl,
+                        decoration: const InputDecoration(labelText: 'Terminal ID (opsional)'),
+                      ),
+                      second: DropdownButtonFormField<int?>(
+                        initialValue: selectedCashierId,
+                        isExpanded: true,
+                        decoration: const InputDecoration(labelText: 'Kasir (opsional)'),
+                        items: [
+                          const DropdownMenuItem<int?>(
+                            value: null,
+                            child: Text('Semua Kasir (*)', maxLines: 1, overflow: TextOverflow.ellipsis),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: DropdownButtonFormField<int?>(
-                            initialValue: selectedCashierId,
-                            decoration: const InputDecoration(labelText: 'Kasir (opsional)'),
-                            items: [
-                              const DropdownMenuItem<int?>(value: null, child: Text('Semua Kasir (*)')),
-                              ...users.map((u) => DropdownMenuItem<int?>(value: u.id, child: Text(u.name))),
-                            ],
-                            onChanged: (v) => setDState(() => selectedCashierId = v),
-                          ),
-                        ),
-                      ],
+                          ...users.map((u) => DropdownMenuItem<int?>(
+                                value: u.id,
+                                child: Text(u.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                              )),
+                        ],
+                        onChanged: (v) => setDState(() => selectedCashierId = v),
+                      ),
                     ),
                     const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: prioCtrl,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(labelText: 'Prioritas Angka'),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        ElevatedButton(
+                    AppBreakpoints.buildResponsivePair(
+                      minPairWidth: 320,
+                      spacing: 8,
+                      first: TextField(
+                        controller: prioCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(labelText: 'Prioritas Angka'),
+                      ),
+                      second: SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
                           onPressed: () async {
                             if (selectedRegId == null) return;
                             try {
@@ -264,12 +289,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           },
                           child: const Text('Simpan Assignment'),
                         ),
-                      ],
+                      ),
                     ),
                   ],
                 ),
               ),
-            ),
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Tutup')),
             ],
@@ -440,7 +464,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         items: BusinessType.values
                             .map((bt) => DropdownMenuItem(
                                   value: bt,
-                                  child: Text(bt.label),
+                                  child: Text(bt.label, maxLines: 1, overflow: TextOverflow.ellipsis),
                                 ))
                             .toList(),
                         onChanged: (v) {
@@ -692,12 +716,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         const SizedBox(height: 12),
                         DropdownButtonFormField<String>(
                           initialValue: sProv.drawerMode,
+                          isExpanded: true,
                           decoration: const InputDecoration(
                             labelText: 'Mode Operasional Laci Kas',
                             prefixIcon: Icon(Icons.point_of_sale_rounded),
                           ),
                           items: DrawerMode.all
-                              .map((m) => DropdownMenuItem(value: m, child: Text(DrawerMode.label(m))))
+                              .map((m) => DropdownMenuItem(
+                                    value: m,
+                                    child: Text(DrawerMode.label(m), maxLines: 1, overflow: TextOverflow.ellipsis),
+                                  ))
                               .toList(),
                           onChanged: (val) async {
                             if (val == null || val == sProv.drawerMode) return;

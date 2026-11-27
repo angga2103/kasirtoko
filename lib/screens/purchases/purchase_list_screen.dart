@@ -217,10 +217,11 @@ class _PurchaseListScreenState extends State<PurchaseListScreen>
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     value: source,
+                    isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Sumber Dana Pembayaran'),
                     items: const [
-                      DropdownMenuItem(value: 'kas_laci', child: Text('Kas Laci Kasir (Tunai)')),
-                      DropdownMenuItem(value: 'transfer', child: Text('Transfer Bank / Rekening')),
+                      DropdownMenuItem(value: 'kas_laci', child: Text('Kas Laci Kasir (Tunai)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                      DropdownMenuItem(value: 'transfer', child: Text('Transfer Bank / Rekening', maxLines: 1, overflow: TextOverflow.ellipsis)),
                     ],
                     onChanged: (v) => setDState(() => source = v ?? 'kas_laci'),
                   ),
@@ -873,33 +874,29 @@ class _PurchaseFormScreenState extends State<PurchaseFormScreen> {
               children: [
                 TextField(controller: _noCtrl, decoration: const InputDecoration(labelText: 'No. Pembelian / PO')),
                 const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _supplierCtrl,
-                        decoration: const InputDecoration(labelText: 'Nama Supplier / Agen *'),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: TextField(
-                        controller: _phoneCtrl,
-                        keyboardType: TextInputType.phone,
-                        decoration: const InputDecoration(labelText: 'No. WA Supplier'),
-                      ),
-                    ),
-                  ],
+                AppBreakpoints.buildResponsivePair(
+                  minPairWidth: 360,
+                  spacing: 10,
+                  first: TextField(
+                    controller: _supplierCtrl,
+                    decoration: const InputDecoration(labelText: 'Nama Supplier / Agen *'),
+                  ),
+                  second: TextField(
+                    controller: _phoneCtrl,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(labelText: 'No. WA Supplier'),
+                  ),
                 ),
                 const SizedBox(height: 10),
                 DropdownButtonFormField<String>(
                   value: _paymentMethod,
+                  isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Sumber Dana / Metode Pembayaran'),
                   items: const [
-                    DropdownMenuItem(value: 'kas_laci', child: Text('Kas Laci Kasir (Tunai)')),
-                    DropdownMenuItem(value: 'transfer', child: Text('Transfer Bank / E-Wallet')),
-                    DropdownMenuItem(value: 'hutang', child: Text('Hutang / Tempo Supplier')),
-                    DropdownMenuItem(value: 'campuran', child: Text('Campuran (Tunai + Transfer + Tempo)')),
+                    DropdownMenuItem(value: 'kas_laci', child: Text('Kas Laci Kasir (Tunai)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'transfer', child: Text('Transfer Bank / E-Wallet', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'hutang', child: Text('Hutang / Tempo Supplier', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'campuran', child: Text('Campuran (Tunai + Transfer + Tempo)', maxLines: 1, overflow: TextOverflow.ellipsis)),
                   ],
                   onChanged: (v) => setState(() => _paymentMethod = v ?? 'kas_laci'),
                 ),

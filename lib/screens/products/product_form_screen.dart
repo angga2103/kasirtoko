@@ -552,13 +552,20 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
                           clipBehavior: Clip.antiAlias,
                           child: hasImage
                               ? Image.file(imgFile, fit: BoxFit.cover)
-                              : Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: const [
-                                    Icon(Icons.add_a_photo_rounded, color: AppTheme.primaryGreen, size: 28),
-                                    SizedBox(height: 4),
-                                    Text('Foto Produk', style: TextStyle(fontSize: 10, color: AppTheme.textMuted)),
-                                  ],
+                              : const Padding(
+                                  padding: EdgeInsets.all(6),
+                                  child: FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Icon(Icons.add_a_photo_rounded, color: AppTheme.primaryGreen, size: 28),
+                                        SizedBox(height: 4),
+                                        Text('Foto Produk', style: TextStyle(fontSize: 10, color: AppTheme.textMuted)),
+                                      ],
+                                    ),
+                                  ),
                                 ),
                         ),
                       ),
@@ -803,27 +810,23 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
                         ],
                       ),
                       const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: DropdownButtonFormField<String>(
-                              value: _conditionType,
-                              decoration: const InputDecoration(labelText: 'Kondisi Produk'),
-                              items: const [
-                                DropdownMenuItem(value: 'baru', child: Text('Baru (New / BNIB)')),
-                                DropdownMenuItem(value: 'bekas', child: Text('Bekas / Second')),
-                              ],
-                              onChanged: (v) => setState(() => _conditionType = v ?? 'baru'),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: TextField(
-                              controller: _imeiCtrl,
-                              decoration: const InputDecoration(labelText: 'IMEI / Serial Number'),
-                            ),
-                          ),
-                        ],
+                      AppBreakpoints.buildResponsivePair(
+                        minPairWidth: 360,
+                        spacing: 8,
+                        first: DropdownButtonFormField<String>(
+                          value: _conditionType,
+                          isExpanded: true,
+                          decoration: const InputDecoration(labelText: 'Kondisi Produk'),
+                          items: const [
+                            DropdownMenuItem(value: 'baru', child: Text('Baru (New / BNIB)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                            DropdownMenuItem(value: 'bekas', child: Text('Bekas / Second', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                          ],
+                          onChanged: (v) => setState(() => _conditionType = v ?? 'baru'),
+                        ),
+                        second: TextField(
+                          controller: _imeiCtrl,
+                          decoration: const InputDecoration(labelText: 'IMEI / Serial Number'),
+                        ),
                       ),
                       const SizedBox(height: 10),
                       TextField(
@@ -840,12 +843,19 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('Multi Satuan (Dus, Pack, Box):',
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                      TextButton.icon(
-                        icon: const Icon(Icons.add, size: 18),
-                        label: const Text('Tambah Satuan'),
-                        onPressed: _addUnitDialog,
+                      const Expanded(
+                        child: Text(
+                          'Multi Satuan (Dus, Pack, Box):',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: TextButton.icon(
+                          icon: const Icon(Icons.add, size: 18),
+                          label: const Text('Tambah Satuan', overflow: TextOverflow.ellipsis),
+                          onPressed: _addUnitDialog,
+                        ),
                       ),
                     ],
                   ),
@@ -870,12 +880,19 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('Harga Bertingkat (Grosir):',
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                      TextButton.icon(
-                        icon: const Icon(Icons.add, size: 18),
-                        label: const Text('Tambah Tingkatan'),
-                        onPressed: _addTieredPriceDialog,
+                      const Expanded(
+                        child: Text(
+                          'Harga Bertingkat (Grosir):',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: TextButton.icon(
+                          icon: const Icon(Icons.add, size: 18),
+                          label: const Text('Tambah Tingkatan', overflow: TextOverflow.ellipsis),
+                          onPressed: _addTieredPriceDialog,
+                        ),
                       ),
                     ],
                   ),
@@ -898,12 +915,19 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('Batch & Kadaluarsa:',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                        TextButton.icon(
-                          icon: const Icon(Icons.add, size: 18),
-                          label: const Text('Tambah Batch'),
-                          onPressed: _addBatchDialog,
+                        const Expanded(
+                          child: Text(
+                            'Batch & Kadaluarsa:',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: TextButton.icon(
+                            icon: const Icon(Icons.add, size: 18),
+                            label: const Text('Tambah Batch', overflow: TextOverflow.ellipsis),
+                            onPressed: _addBatchDialog,
+                          ),
                         ),
                       ],
                     ),

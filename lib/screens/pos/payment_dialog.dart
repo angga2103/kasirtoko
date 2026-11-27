@@ -473,16 +473,35 @@ class _PaymentDialogState extends State<PaymentDialog> {
                 // Payment Methods
                 const Text('Metode Pembayaran:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(child: _buildMethodButton('tunai', 'Tunai', Icons.payments_rounded)),
-                    const SizedBox(width: 6),
-                    Expanded(child: _buildMethodButton('qris', 'QRIS', Icons.qr_code_2_rounded)),
-                    const SizedBox(width: 6),
-                    Expanded(child: _buildMethodButton('transfer', 'Transfer', Icons.account_balance_rounded)),
-                    const SizedBox(width: 6),
-                    Expanded(child: _buildMethodButton('kasbon', 'Kasbon', Icons.hourglass_top_rounded)),
-                  ],
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final textScale = AppBreakpoints.textScaleFactor(context, max: 1.5);
+                    final singleRowFits = (constraints.maxWidth - 18) / 4 >= 64 * textScale;
+                    final b1 = _buildMethodButton('tunai', 'Tunai', Icons.payments_rounded);
+                    final b2 = _buildMethodButton('qris', 'QRIS', Icons.qr_code_2_rounded);
+                    final b3 = _buildMethodButton('transfer', 'Transfer', Icons.account_balance_rounded);
+                    final b4 = _buildMethodButton('kasbon', 'Kasbon', Icons.hourglass_top_rounded);
+                    if (!singleRowFits) {
+                      return Column(
+                        children: [
+                          Row(children: [Expanded(child: b1), const SizedBox(width: 8), Expanded(child: b2)]),
+                          const SizedBox(height: 8),
+                          Row(children: [Expanded(child: b3), const SizedBox(width: 8), Expanded(child: b4)]),
+                        ],
+                      );
+                    }
+                    return Row(
+                      children: [
+                        Expanded(child: b1),
+                        const SizedBox(width: 6),
+                        Expanded(child: b2),
+                        const SizedBox(width: 6),
+                        Expanded(child: b3),
+                        const SizedBox(width: 6),
+                        Expanded(child: b4),
+                      ],
+                    );
+                  },
                 ),
                 const SizedBox(height: 14),
 
@@ -518,19 +537,17 @@ class _PaymentDialogState extends State<PaymentDialog> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(10)),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('Kembalian:', style: TextStyle(fontWeight: FontWeight.bold)),
-                        Text(
-                          CurrencyHelper.format(change),
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: _paidAmount >= netDue ? AppTheme.primaryGreen : AppTheme.accentRed,
-                          ),
+                    child: AppBreakpoints.spaceBetweenRow(
+                      const Text('Kembalian:', style: TextStyle(fontWeight: FontWeight.bold)),
+                      Text(
+                        CurrencyHelper.format(change),
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: _paidAmount >= netDue ? AppTheme.primaryGreen : AppTheme.accentRed,
                         ),
-                      ],
+                      ),
                     ),
                   ),
                   const SizedBox(height: 14),
@@ -692,7 +709,10 @@ class _PaymentDialogState extends State<PaymentDialog> {
                       prefixIcon: Icon(Icons.people_outline_rounded, size: 20),
                     ),
                     items: [
-                      const DropdownMenuItem<int?>(value: null, child: Text('Pelanggan Umum / Input Manual')),
+                      const DropdownMenuItem<int?>(
+                        value: null,
+                        child: Text('Pelanggan Umum / Input Manual', maxLines: 1, overflow: TextOverflow.ellipsis),
+                      ),
                       ...registeredCustomers.map((c) => DropdownMenuItem<int?>(
                             value: c.id,
                             child: Text(c.phone.isNotEmpty ? '${c.name} (${c.phone})' : c.name, overflow: TextOverflow.ellipsis),
@@ -824,30 +844,35 @@ class _PaymentDialogState extends State<PaymentDialog> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDState) => AlertDialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
           title: const Text('Daftarkan Pelanggan Baru'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                decoration: const InputDecoration(labelText: 'Nama Lengkap Pelanggan *'),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: phoneCtrl,
-                keyboardType: TextInputType.phone,
-                decoration: const InputDecoration(labelText: 'No. HP / WhatsApp *'),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: addressCtrl,
-                decoration: const InputDecoration(labelText: 'Alamat (Opsional)'),
-              ),
-              if (errText != null) ...[
+          content: AppBreakpoints.scrollableDialogContent(
+            context,
+            maxWidth: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  decoration: const InputDecoration(labelText: 'Nama Lengkap Pelanggan *'),
+                ),
                 const SizedBox(height: 8),
-                Text(errText!, style: const TextStyle(color: AppTheme.accentRed, fontSize: 12)),
+                TextField(
+                  controller: phoneCtrl,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(labelText: 'No. HP / WhatsApp *'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: addressCtrl,
+                  decoration: const InputDecoration(labelText: 'Alamat (Opsional)'),
+                ),
+                if (errText != null) ...[
+                  const SizedBox(height: 8),
+                  Text(errText!, style: const TextStyle(color: AppTheme.accentRed, fontSize: 12)),
+                ],
               ],
-            ],
+            ),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Batal')),

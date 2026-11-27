@@ -238,7 +238,7 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
                       physics: const NeverScrollableScrollPhysics(),
                       crossAxisSpacing: 10,
                       mainAxisSpacing: 10,
-                      childAspectRatio: isWide ? 1.85 : 1.9,
+                      mainAxisExtent: AppBreakpoints.scaledExtent(context, fixedHeight: 36, textHeight: 46),
                       children: [
                         _summaryCard('Saldo Awal Laci', openingBal, Colors.blueGrey, Icons.account_balance_wallet_outlined),
                         _summaryCard('Masuk Operasional', totalIn, AppTheme.primaryGreen, Icons.south_west_rounded),
@@ -399,42 +399,37 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
                           ],
                         ),
                         const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: DropdownButtonFormField<String>(
-                                value: _category,
-                                isExpanded: true,
-                                decoration: const InputDecoration(labelText: 'Kategori'),
-                                items: (_type == 'out' ? _expenseCategories : _incomeCategories)
-                                    .map((e) => DropdownMenuItem(value: e, child: Text(e, overflow: TextOverflow.ellipsis)))
-                                    .toList(),
-                                onChanged: (val) {
-                                  if (val != null) {
-                                    setState(() {
-                                      _category = val;
-                                      if (val.contains('Internal')) {
-                                        _isInternalTransfer = true;
-                                      }
-                                    });
+                        AppBreakpoints.buildResponsivePair(
+                          minPairWidth: 340,
+                          spacing: 10,
+                          first: DropdownButtonFormField<String>(
+                            value: _category,
+                            isExpanded: true,
+                            decoration: const InputDecoration(labelText: 'Kategori'),
+                            items: (_type == 'out' ? _expenseCategories : _incomeCategories)
+                                .map((e) => DropdownMenuItem(value: e, child: Text(e, maxLines: 1, overflow: TextOverflow.ellipsis)))
+                                .toList(),
+                            onChanged: (val) {
+                              if (val != null) {
+                                setState(() {
+                                  _category = val;
+                                  if (val.contains('Internal')) {
+                                    _isInternalTransfer = true;
                                   }
-                                },
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: DropdownButtonFormField<String>(
-                                value: _accountMode,
-                                isExpanded: true,
-                                decoration: const InputDecoration(labelText: 'Akun / Dompet'),
-                                items: const [
-                                  DropdownMenuItem(value: 'kas_laci', child: Text('Laci Kasir (Tunai)', overflow: TextOverflow.ellipsis)),
-                                  DropdownMenuItem(value: 'transfer', child: Text('Rekening Bank / QRIS', overflow: TextOverflow.ellipsis)),
-                                ],
-                                onChanged: (v) => setState(() => _accountMode = v ?? 'kas_laci'),
-                              ),
-                            ),
-                          ],
+                                });
+                              }
+                            },
+                          ),
+                          second: DropdownButtonFormField<String>(
+                            value: _accountMode,
+                            isExpanded: true,
+                            decoration: const InputDecoration(labelText: 'Akun / Dompet'),
+                            items: const [
+                              DropdownMenuItem(value: 'kas_laci', child: Text('Laci Kasir (Tunai)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                              DropdownMenuItem(value: 'transfer', child: Text('Rekening Bank / QRIS', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                            ],
+                            onChanged: (v) => setState(() => _accountMode = v ?? 'kas_laci'),
+                          ),
                         ),
                         const SizedBox(height: 10),
                         TextField(

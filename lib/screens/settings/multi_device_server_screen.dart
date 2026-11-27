@@ -54,8 +54,11 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDlgState) => AlertDialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
           title: const Text('Tambah Terminal Staff Baru'),
-          content: SingleChildScrollView(
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -69,6 +72,7 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
                 const SizedBox(height: 12),
                 DropdownButtonFormField<int?>(
                   value: selectedRegisterId,
+                  isExpanded: true,
                   decoration: const InputDecoration(
                     labelText: 'Laci Kas yang Ditugaskan',
                     border: OutlineInputBorder(),
@@ -76,13 +80,21 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
                   items: [
                     const DropdownMenuItem<int?>(
                       value: null,
-                      child: Text('Otomatis / Default Toko'),
+                      child: Text(
+                        'Otomatis / Default Toko',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                     ...setProv.cashRegisters
                         .where((r) => r.isActive)
                         .map((r) => DropdownMenuItem<int?>(
                               value: r.id,
-                              child: Text('${r.registerCode} — ${r.name}'),
+                              child: Text(
+                                '${r.registerCode} — ${r.name}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             )),
                   ],
                   onChanged: (v) => setDlgState(() => selectedRegisterId = v),
@@ -103,6 +115,7 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
                   onChanged: (v) => setDlgState(() => allowManualDrawer = v),
                 ),
               ],
+            ),
             ),
           ),
           actions: [
@@ -239,28 +252,36 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
           ),
           if (!running) ...[
             const SizedBox(height: 10),
-            Row(
-              children: [
-                SizedBox(
-                  width: 120,
-                  child: TextField(
-                    controller: _portCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'Port HTTPS',
-                      isDense: true,
-                      border: OutlineInputBorder(),
-                    ),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final textScale = AppBreakpoints.textScaleFactor(context, max: 1.5);
+                final portField = TextField(
+                  controller: _portCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Port HTTPS',
+                    isDense: true,
+                    border: OutlineInputBorder(),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Aktifkan Wi-Fi atau Hotspot Android sebelum menyalakan server agar terminal Staff dapat tersambung.',
-                    style: TextStyle(fontSize: 11.5, color: AppTheme.textMuted),
-                  ),
-                ),
-              ],
+                );
+                const hintText = Text(
+                  'Aktifkan Wi-Fi atau Hotspot Android sebelum menyalakan server agar terminal Staff dapat tersambung.',
+                  style: TextStyle(fontSize: 11.5, color: AppTheme.textMuted),
+                );
+                if (constraints.maxWidth < 300 * textScale) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [portField, const SizedBox(height: 8), hintText],
+                  );
+                }
+                return Row(
+                  children: [
+                    SizedBox(width: 116, child: portField),
+                    const SizedBox(width: 10),
+                    const Expanded(child: hintText),
+                  ],
+                );
+              },
             ),
           ],
           if (srvProv.lastError != null) ...[
@@ -288,9 +309,11 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
                     children: [
                       const Icon(Icons.verified_user_outlined, size: 16, color: AppTheme.primaryGreen),
                       const SizedBox(width: 6),
-                      Text(
-                        'PIN Checksum TLS Sertifikat: ${identity.shortPin}',
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
+                      Expanded(
+                        child: Text(
+                          'PIN Checksum TLS Sertifikat: ${identity.shortPin}',
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
+                        ),
                       ),
                     ],
                   ),
@@ -470,19 +493,22 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
   ) {
     final online = srvProv.isTerminalOnline(t.terminalId);
     final actor = authProv.currentUser?.name ?? 'Admin';
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
         color: t.isRevoked ? Colors.red.shade50 : Colors.grey.shade50,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: t.isRevoked
-              ? Colors.red.shade200
-              : (online ? AppTheme.success : Colors.grey.shade300),
-        ),
-      ),
-      child: Column(
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: t.isRevoked
+                  ? Colors.red.shade200
+                  : (online ? AppTheme.success : Colors.grey.shade300),
+            ),
+          ),
+          child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
@@ -500,10 +526,14 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
                   children: [
                     Text(
                       '${t.terminalName} (${t.terminalId})',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
                     ),
                     Text(
                       'Model: ${t.deviceModel.isEmpty ? "-" : t.deviceModel} • Laci #${t.assignedRegisterId ?? "-"}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 11.5, color: AppTheme.textMuted),
                     ),
                   ],
@@ -526,62 +556,81 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
           ),
           if (!t.isRevoked) ...[
             const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<int?>(
-                    value: setProv.cashRegisters.any((r) => r.id == t.assignedRegisterId)
-                        ? t.assignedRegisterId
-                        : null,
-                    isDense: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Laci Kasir',
-                      border: OutlineInputBorder(),
-                    ),
-                    items: [
-                      const DropdownMenuItem<int?>(value: null, child: Text('Default / Ikut Kasir')),
-                      ...setProv.cashRegisters
-                          .where((r) => r.isActive)
-                          .map((r) => DropdownMenuItem<int?>(
-                                value: r.id,
-                                child: Text(r.registerCode),
-                              )),
-                    ],
-                    onChanged: (v) => srvProv.updateTerminalPolicy(
-                      terminalId: t.terminalId,
-                      assignedRegisterId: v,
-                      clearAssignedRegister: v == null,
-                      actorName: actor,
+            AppBreakpoints.buildResponsivePair(
+              minPairWidth: 420,
+              spacing: 8,
+              first: DropdownButtonFormField<int?>(
+                value: setProv.cashRegisters.any((r) => r.id == t.assignedRegisterId)
+                    ? t.assignedRegisterId
+                    : null,
+                isExpanded: true,
+                isDense: true,
+                decoration: const InputDecoration(
+                  labelText: 'Laci Kasir',
+                  border: OutlineInputBorder(),
+                ),
+                items: [
+                  const DropdownMenuItem<int?>(
+                    value: null,
+                    child: Text(
+                      'Default / Ikut Kasir',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: DropdownButtonFormField<int?>(
-                    value: prnProv.printers.any((p) => p.id == t.defaultPrinterId)
-                        ? t.defaultPrinterId
-                        : null,
-                    isDense: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Printer Default',
-                      border: OutlineInputBorder(),
-                    ),
-                    items: [
-                      const DropdownMenuItem<int?>(value: null, child: Text('Ikut Default Admin')),
-                      ...prnProv.printers.map((p) => DropdownMenuItem<int?>(
-                            value: p.id,
-                            child: Text(p.name, overflow: TextOverflow.ellipsis),
+                  ...setProv.cashRegisters
+                      .where((r) => r.isActive)
+                      .map((r) => DropdownMenuItem<int?>(
+                            value: r.id,
+                            child: Text(
+                              '${r.registerCode} — ${r.name}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           )),
-                    ],
-                    onChanged: (v) => srvProv.updateTerminalPolicy(
-                      terminalId: t.terminalId,
-                      defaultPrinterId: v,
-                      clearDefaultPrinter: v == null,
-                      actorName: actor,
+                ],
+                onChanged: (v) => srvProv.updateTerminalPolicy(
+                  terminalId: t.terminalId,
+                  assignedRegisterId: v,
+                  clearAssignedRegister: v == null,
+                  actorName: actor,
+                ),
+              ),
+              second: DropdownButtonFormField<int?>(
+                value: prnProv.printers.any((p) => p.id == t.defaultPrinterId)
+                    ? t.defaultPrinterId
+                    : null,
+                isExpanded: true,
+                isDense: true,
+                decoration: const InputDecoration(
+                  labelText: 'Printer Default',
+                  border: OutlineInputBorder(),
+                ),
+                items: [
+                  const DropdownMenuItem<int?>(
+                    value: null,
+                    child: Text(
+                      'Ikut Default Admin',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  ...prnProv.printers.map((p) => DropdownMenuItem<int?>(
+                        value: p.id,
+                        child: Text(
+                          p.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      )),
+                ],
+                onChanged: (v) => srvProv.updateTerminalPolicy(
+                  terminalId: t.terminalId,
+                  defaultPrinterId: v,
+                  clearDefaultPrinter: v == null,
+                  actorName: actor,
                 ),
-              ],
+              ),
             ),
             SwitchListTile(
               dense: true,
@@ -621,6 +670,8 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
           ],
         ],
       ),
+    ),
+    ),
     );
   }
 
@@ -645,25 +696,28 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
           else
             ...jobs.take(15).map((job) {
               final canRetry = job.status == PrintJobStatus.failed;
-              return ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                title: Text(
-                  '${job.invoiceNumber.isNotEmpty ? job.invoiceNumber : job.jobType} • ${job.terminalId}',
-                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5),
+              return Material(
+                color: Colors.white,
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(
+                    '${job.invoiceNumber.isNotEmpty ? job.invoiceNumber : job.jobType} • ${job.terminalId}',
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5),
+                  ),
+                  subtitle: Text(
+                    'Status: ${job.status} • Percobaan: ${job.attempts}'
+                    '${job.drawerPulseSent ? ' • Pulse Laci 1x' : ''}'
+                    '${job.errorMessage.isNotEmpty ? '\n${job.errorMessage}' : ''}',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                  trailing: canRetry
+                      ? TextButton(
+                          onPressed: () => srvProv.retryPrintJob(job.jobUuid),
+                          child: const Text('Cetak Ulang'),
+                        )
+                      : null,
                 ),
-                subtitle: Text(
-                  'Status: ${job.status} • Percobaan: ${job.attempts}'
-                  '${job.drawerPulseSent ? ' • Pulse Laci 1x' : ''}'
-                  '${job.errorMessage.isNotEmpty ? '\n${job.errorMessage}' : ''}',
-                  style: const TextStyle(fontSize: 11),
-                ),
-                trailing: canRetry
-                    ? TextButton(
-                        onPressed: () => srvProv.retryPrintJob(job.jobUuid),
-                        child: const Text('Cetak Ulang'),
-                      )
-                    : null,
               );
             }),
         ],

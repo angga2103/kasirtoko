@@ -13,10 +13,12 @@ class HeldOrdersDialog extends StatelessWidget {
     final pos = Provider.of<PosProvider>(context);
 
     return AlertDialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
       title: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          const Text('Pesanan Ditahan'),
+          const Expanded(child: Text('Pesanan Ditahan')),
+          const SizedBox(width: 8),
           Text(
             '${pos.heldOrders.length} Antrean',
             style: const TextStyle(fontSize: 12, color: AppTheme.textMuted),
@@ -24,8 +26,8 @@ class HeldOrdersDialog extends StatelessWidget {
         ],
       ),
       content: SizedBox(
-        width: 400,
-        height: 350,
+        width: AppBreakpoints.boundedDialogWidth(context, maxWidth: 420),
+        height: (MediaQuery.sizeOf(context).height * 0.55).clamp(180.0, 350.0),
         child: pos.heldOrders.isEmpty
             ? const Center(
                 child: Text('Tidak ada pesanan yang sedang ditahan.'),

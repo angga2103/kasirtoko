@@ -66,11 +66,12 @@ class _DebtListScreenState extends State<DebtListScreen> with SingleTickerProvid
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     value: method,
+                    isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Metode Pembayaran'),
                     items: const [
-                      DropdownMenuItem(value: 'tunai', child: Text('Tunai (Masuk Kas Laci)')),
-                      DropdownMenuItem(value: 'transfer', child: Text('Transfer Bank')),
-                      DropdownMenuItem(value: 'qris', child: Text('QRIS')),
+                      DropdownMenuItem(value: 'tunai', child: Text('Tunai (Masuk Kas Laci)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                      DropdownMenuItem(value: 'transfer', child: Text('Transfer Bank', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                      DropdownMenuItem(value: 'qris', child: Text('QRIS', maxLines: 1, overflow: TextOverflow.ellipsis)),
                     ],
                     onChanged: (v) => setDState(() => method = v ?? 'tunai'),
                   ),
@@ -166,9 +167,11 @@ class _DebtListScreenState extends State<DebtListScreen> with SingleTickerProvid
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
         title: Text('Riwayat Cicilan • ${debt.invoiceNumber}', style: const TextStyle(fontSize: 16)),
         content: SizedBox(
-          width: 400,
+          width: AppBreakpoints.boundedDialogWidth(ctx, maxWidth: 420),
+          height: payments.isEmpty ? null : (MediaQuery.sizeOf(ctx).height * 0.5).clamp(160.0, 360.0),
           child: payments.isEmpty
               ? const Text('Belum ada pembayaran atau pemotongan saldo pada kasbon ini.')
               : ListView.separated(

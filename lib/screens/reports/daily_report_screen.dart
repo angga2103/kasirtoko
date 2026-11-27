@@ -91,31 +91,33 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
         context: context,
         builder: (ctx) => StatefulBuilder(
           builder: (_, setDState) => AlertDialog(
+            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
             title: const Text('Pilih Bulan & Tahun'),
-            content: Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<int>(
-                    value: chosenMonth,
-                    decoration: const InputDecoration(labelText: 'Bulan'),
-                    items: List.generate(12, (i) => i + 1)
-                        .map((m) => DropdownMenuItem(value: m, child: Text(_monthName(m))))
-                        .toList(),
-                    onChanged: (v) => setDState(() => chosenMonth = v ?? chosenMonth),
-                  ),
+            content: AppBreakpoints.scrollableDialogContent(
+              ctx,
+              maxWidth: 420,
+              child: AppBreakpoints.buildResponsivePair(
+                minPairWidth: 320,
+                spacing: 10,
+                first: DropdownButtonFormField<int>(
+                  value: chosenMonth,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Bulan'),
+                  items: List.generate(12, (i) => i + 1)
+                      .map((m) => DropdownMenuItem(value: m, child: Text(_monthName(m), maxLines: 1, overflow: TextOverflow.ellipsis)))
+                      .toList(),
+                  onChanged: (v) => setDState(() => chosenMonth = v ?? chosenMonth),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: DropdownButtonFormField<int>(
-                    value: chosenYear,
-                    decoration: const InputDecoration(labelText: 'Tahun'),
-                    items: List.generate(7, (i) => now.year - 5 + i)
-                        .map((y) => DropdownMenuItem(value: y, child: Text('$y')))
-                        .toList(),
-                    onChanged: (v) => setDState(() => chosenYear = v ?? chosenYear),
-                  ),
+                second: DropdownButtonFormField<int>(
+                  value: chosenYear,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Tahun'),
+                  items: List.generate(7, (i) => now.year - 5 + i)
+                      .map((y) => DropdownMenuItem(value: y, child: Text('$y', maxLines: 1, overflow: TextOverflow.ellipsis)))
+                      .toList(),
+                  onChanged: (v) => setDState(() => chosenYear = v ?? chosenYear),
                 ),
-              ],
+              ),
             ),
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
@@ -136,14 +138,19 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
         context: context,
         builder: (ctx) => StatefulBuilder(
           builder: (_, setDState) => AlertDialog(
+            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
             title: const Text('Pilih Tahun Laporan'),
-            content: DropdownButtonFormField<int>(
-              value: chosenYear,
-              decoration: const InputDecoration(labelText: 'Tahun'),
-              items: List.generate(7, (i) => now.year - 5 + i)
-                  .map((y) => DropdownMenuItem(value: y, child: Text('$y')))
-                  .toList(),
-              onChanged: (v) => setDState(() => chosenYear = v ?? chosenYear),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 380),
+              child: DropdownButtonFormField<int>(
+                value: chosenYear,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Tahun'),
+                items: List.generate(7, (i) => now.year - 5 + i)
+                    .map((y) => DropdownMenuItem(value: y, child: Text('$y', maxLines: 1, overflow: TextOverflow.ellipsis)))
+                    .toList(),
+                onChanged: (v) => setDState(() => chosenYear = v ?? chosenYear),
+              ),
             ),
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
@@ -203,6 +210,8 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
 
     await showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
+      constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.85),
       builder: (ctx) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 12),
@@ -491,7 +500,7 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
                   physics: const NeverScrollableScrollPhysics(),
                   crossAxisSpacing: 10,
                   mainAxisSpacing: 10,
-                  childAspectRatio: isWide ? 1.85 : 1.75,
+                  mainAxisExtent: AppBreakpoints.scaledExtent(context, fixedHeight: 38, textHeight: 58),
                   children: [
                     _kpiCard('Omzet Kotor', CurrencyHelper.format(totalRev), Icons.payments_rounded, AppTheme.primaryGreen),
                     _kpiCard('Penjualan Bersih', CurrencyHelper.format(netSales), Icons.verified_rounded, Colors.teal),
@@ -545,9 +554,13 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
 
                 // Search & Paginated Transactions List
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text('Rincian Nota (${filteredTx.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                    Expanded(
+                      child: Text(
+                        'Rincian Nota (${filteredTx.length})',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 8),
@@ -1035,12 +1048,13 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
   Widget _profitRow(String label, String value, {bool bold = false, Color? color}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label, style: TextStyle(fontSize: bold ? 13.5 : 12.5, fontWeight: bold ? FontWeight.bold : FontWeight.normal)),
-          Text(value, style: TextStyle(fontSize: bold ? 14.5 : 12.5, fontWeight: bold ? FontWeight.bold : FontWeight.w600, color: color ?? AppTheme.textDark)),
-        ],
+      child: AppBreakpoints.spaceBetweenRow(
+        Text(label, style: TextStyle(fontSize: bold ? 13.5 : 12.5, fontWeight: bold ? FontWeight.bold : FontWeight.normal)),
+        Text(
+          value,
+          textAlign: TextAlign.right,
+          style: TextStyle(fontSize: bold ? 14.5 : 12.5, fontWeight: bold ? FontWeight.bold : FontWeight.w600, color: color ?? AppTheme.textDark),
+        ),
       ),
     );
   }
@@ -1093,12 +1107,13 @@ class _DailyReportScreenState extends State<DailyReportScreen> with SingleTicker
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(label, style: const TextStyle(fontSize: 12)),
-              Text('${CurrencyHelper.format(val)} (${(ratio * 100).toStringAsFixed(0)}%)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color)),
-            ],
+          AppBreakpoints.spaceBetweenRow(
+            Text(label, style: const TextStyle(fontSize: 12)),
+            Text(
+              '${CurrencyHelper.format(val)} (${(ratio * 100).toStringAsFixed(0)}%)',
+              textAlign: TextAlign.right,
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color),
+            ),
           ),
           const SizedBox(height: 3),
           LinearProgressIndicator(

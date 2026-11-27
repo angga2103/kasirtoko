@@ -67,9 +67,11 @@ class ReceiptDialog extends StatelessWidget {
                     size: 28,
                   ),
                   const SizedBox(width: 8),
-                  Text(
-                    isReprint ? 'Cetak Ulang Struk' : 'Transaksi Berhasil!',
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.primaryGreen),
+                  Flexible(
+                    child: Text(
+                      isReprint ? 'Cetak Ulang Struk' : 'Transaksi Berhasil!',
+                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.primaryGreen),
+                    ),
                   ),
                 ],
               ),
@@ -134,6 +136,7 @@ class ReceiptDialog extends StatelessWidget {
                               padding: const EdgeInsets.symmetric(vertical: 2),
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Expanded(
                                     child: Column(
@@ -153,9 +156,13 @@ class ReceiptDialog extends StatelessWidget {
                                       ],
                                     ),
                                   ),
-                                  Text(
-                                    CurrencyHelper.format(item.subtotal),
-                                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                  const SizedBox(width: 8),
+                                  Flexible(
+                                    child: Text(
+                                      CurrencyHelper.format(item.subtotal),
+                                      textAlign: TextAlign.right,
+                                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                    ),
                                   ),
                                 ],
                               ),
@@ -165,69 +172,51 @@ class ReceiptDialog extends StatelessWidget {
                         const Divider(thickness: 0.8),
 
                         if (config.showTotal) ...[
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('Subtotal', style: TextStyle(fontSize: 10)),
-                              Text(CurrencyHelper.format(transaction.subtotal), style: const TextStyle(fontSize: 10)),
-                            ],
+                          AppBreakpoints.spaceBetweenRow(
+                            const Text('Subtotal', style: TextStyle(fontSize: 10)),
+                            Text(CurrencyHelper.format(transaction.subtotal), textAlign: TextAlign.right, style: const TextStyle(fontSize: 10)),
                           ),
                           if (config.showDiscount && transaction.discountTotal > 0)
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(
-                                  transaction.promoName.isNotEmpty ? 'Diskon (${transaction.promoName})' : 'Diskon',
-                                  style: const TextStyle(fontSize: 10, color: Colors.pink),
-                                ),
-                                Text('-${CurrencyHelper.format(transaction.discountTotal)}',
-                                    style: const TextStyle(fontSize: 10, color: Colors.pink)),
-                              ],
+                            AppBreakpoints.spaceBetweenRow(
+                              Text(
+                                transaction.promoName.isNotEmpty ? 'Diskon (${transaction.promoName})' : 'Diskon',
+                                style: const TextStyle(fontSize: 10, color: Colors.pink),
+                              ),
+                              Text('-${CurrencyHelper.format(transaction.discountTotal)}',
+                                  textAlign: TextAlign.right,
+                                  style: const TextStyle(fontSize: 10, color: Colors.pink)),
                             ),
                           if (transaction.taxAmount > 0)
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text('Pajak', style: TextStyle(fontSize: 10)),
-                                Text(CurrencyHelper.format(transaction.taxAmount), style: const TextStyle(fontSize: 10)),
-                              ],
+                            AppBreakpoints.spaceBetweenRow(
+                              const Text('Pajak', style: TextStyle(fontSize: 10)),
+                              Text(CurrencyHelper.format(transaction.taxAmount), textAlign: TextAlign.right, style: const TextStyle(fontSize: 10)),
                             ),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('TOTAL', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                              Text(
-                                CurrencyHelper.format(transaction.grandTotal),
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold, fontSize: 14, color: AppTheme.primaryGreen),
-                              ),
-                            ],
+                          AppBreakpoints.spaceBetweenRow(
+                            const Text('TOTAL', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            Text(
+                              CurrencyHelper.format(transaction.grandTotal),
+                              textAlign: TextAlign.right,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.bold, fontSize: 14, color: AppTheme.primaryGreen),
+                            ),
                           ),
                         ],
                         if (config.showPaidAndChange) ...[
                           if (transaction.creditUsed > 0)
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text('Potong Saldo Kredit', style: TextStyle(fontSize: 10)),
-                                Text('-${CurrencyHelper.format(transaction.creditUsed)}',
-                                    style: const TextStyle(fontSize: 10)),
-                              ],
-                            ),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text('Bayar (${transaction.paymentMethod.toUpperCase()})',
+                            AppBreakpoints.spaceBetweenRow(
+                              const Text('Potong Saldo Kredit', style: TextStyle(fontSize: 10)),
+                              Text('-${CurrencyHelper.format(transaction.creditUsed)}',
+                                  textAlign: TextAlign.right,
                                   style: const TextStyle(fontSize: 10)),
-                              Text(CurrencyHelper.format(transaction.amountPaid), style: const TextStyle(fontSize: 10)),
-                            ],
+                            ),
+                          AppBreakpoints.spaceBetweenRow(
+                            Text('Bayar (${transaction.paymentMethod.toUpperCase()})',
+                                style: const TextStyle(fontSize: 10)),
+                            Text(CurrencyHelper.format(transaction.amountPaid), textAlign: TextAlign.right, style: const TextStyle(fontSize: 10)),
                           ),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('Kembali', style: TextStyle(fontSize: 10)),
-                              Text(CurrencyHelper.format(transaction.changeAmount), style: const TextStyle(fontSize: 10)),
-                            ],
+                          AppBreakpoints.spaceBetweenRow(
+                            const Text('Kembali', style: TextStyle(fontSize: 10)),
+                            Text(CurrencyHelper.format(transaction.changeAmount), textAlign: TextAlign.right, style: const TextStyle(fontSize: 10)),
                           ),
                         ],
 
@@ -322,7 +311,11 @@ class ReceiptDialog extends StatelessWidget {
                   Expanded(
                     child: ElevatedButton(
                       onPressed: () => Navigator.pop(context),
-                      child: Text(isReprint ? 'TUTUP' : 'TRANSAKSI BARU'),
+                      child: Text(
+                        isReprint ? 'TUTUP' : 'TRANSAKSI BARU',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ),
                 ],

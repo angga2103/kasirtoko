@@ -118,8 +118,8 @@ class _LoginScreenState extends State<LoginScreen> {
               Flexible(child: Text('Pemulihan Password / PIN')),
             ],
           ),
-          content: SizedBox(
-            width: 420,
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,

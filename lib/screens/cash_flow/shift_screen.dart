@@ -193,10 +193,13 @@ class _ShiftScreenState extends State<ShiftScreen> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text(
-                              'Shift Aktif',
-                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                            const Expanded(
+                              child: Text(
+                                'Shift Aktif',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                              ),
                             ),
+                            const SizedBox(width: 8),
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                               decoration: BoxDecoration(
@@ -311,25 +314,23 @@ class _ShiftScreenState extends State<ShiftScreen> {
                                     color: isBalanced ? Colors.green : (isOver ? Colors.blue : Colors.red),
                                   ),
                                 ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    const Text('Status Selisih:', style: TextStyle(fontWeight: FontWeight.bold)),
-                                    Text(
-                                      isBalanced
-                                          ? 'SESUAI (Rp 0)'
-                                          : (isOver
-                                              ? 'LEBIH (+${CurrencyHelper.format(diff)})'
-                                              : 'KURANG (${CurrencyHelper.format(diff)})'),
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 14,
-                                        color: isBalanced
-                                            ? Colors.green.shade800
-                                            : (isOver ? Colors.blue.shade800 : Colors.red.shade800),
-                                      ),
+                                child: AppBreakpoints.spaceBetweenRow(
+                                  const Text('Status Selisih:', style: TextStyle(fontWeight: FontWeight.bold)),
+                                  Text(
+                                    isBalanced
+                                        ? 'SESUAI (Rp 0)'
+                                        : (isOver
+                                            ? 'LEBIH (+${CurrencyHelper.format(diff)})'
+                                            : 'KURANG (${CurrencyHelper.format(diff)})'),
+                                    textAlign: TextAlign.right,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 14,
+                                      color: isBalanced
+                                          ? Colors.green.shade800
+                                          : (isOver ? Colors.blue.shade800 : Colors.red.shade800),
                                     ),
-                                  ],
+                                  ),
                                 ),
                               );
                             },
@@ -595,25 +596,23 @@ class _ShiftScreenState extends State<ShiftScreen> {
   Widget _buildShiftRow(String label, String value, {bool isBold = false, Color? highlightColor}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: isBold ? 13 : 12,
-              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-            ),
+      child: AppBreakpoints.spaceBetweenRow(
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: isBold ? 13 : 12,
+            fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
           ),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: isBold ? 14 : 12,
-              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-              color: highlightColor ?? AppTheme.textDark,
-            ),
+        ),
+        Text(
+          value,
+          textAlign: TextAlign.right,
+          style: TextStyle(
+            fontSize: isBold ? 14 : 12,
+            fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+            color: highlightColor ?? AppTheme.textDark,
           ),
-        ],
+        ),
       ),
     );
   }

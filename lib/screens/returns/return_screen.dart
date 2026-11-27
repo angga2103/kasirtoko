@@ -314,10 +314,11 @@ class _ReturnScreenState extends State<ReturnScreen> with SingleTickerProviderSt
           }).toList();
 
           return AlertDialog(
+            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
             title: const Text('Pilih Barang Pengganti'),
             content: SizedBox(
-              width: 460,
-              height: 420,
+              width: AppBreakpoints.boundedDialogWidth(ctx, maxWidth: 460),
+              height: (MediaQuery.sizeOf(ctx).height * 0.6).clamp(220.0, 420.0),
               child: Column(
                 children: [
                   TextField(
@@ -723,25 +724,30 @@ class _ReturnScreenState extends State<ReturnScreen> with SingleTickerProviderSt
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
         title: Text('Batalkan Retur ${ro.returnNumber}?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Pembatalan (Void) akan membalikkan semua mutasi stok, stok pengganti, saldo kredit, piutang, dan arus kas secara atomik.',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: reasonCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Alasan Pembatalan Retur *',
-                hintText: 'Contoh: Salah input item retur',
+        content: AppBreakpoints.scrollableDialogContent(
+          ctx,
+          maxWidth: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Pembatalan (Void) akan membalikkan semua mutasi stok, stok pengganti, saldo kredit, piutang, dan arus kas secara atomik.',
+                style: TextStyle(fontSize: 12),
               ),
-              maxLines: 2,
-            ),
-          ],
+              const SizedBox(height: 12),
+              TextField(
+                controller: reasonCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Alasan Pembatalan Retur *',
+                  hintText: 'Contoh: Salah input item retur',
+                ),
+                maxLines: 2,
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Tutup')),
@@ -802,25 +808,30 @@ class _ReturnScreenState extends State<ReturnScreen> with SingleTickerProviderSt
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
         title: Text(isSellable ? 'Lulus Inspeksi -> Stok Jual' : 'Afkir -> Stok Rusak'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('${p.name} (Karantina: ${p.quarantineStock} ${p.baseUnit})',
-                style: const TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-            TextField(
-              controller: qtyCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(labelText: 'Jumlah (${p.baseUnit})'),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: noteCtrl,
-              decoration: const InputDecoration(labelText: 'Catatan Inspeksi (Opsional)'),
-            ),
-          ],
+        content: AppBreakpoints.scrollableDialogContent(
+          ctx,
+          maxWidth: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${p.name} (Karantina: ${p.quarantineStock} ${p.baseUnit})',
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              TextField(
+                controller: qtyCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(labelText: 'Jumlah (${p.baseUnit})'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: noteCtrl,
+                decoration: const InputDecoration(labelText: 'Catatan Inspeksi (Opsional)'),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
@@ -874,9 +885,11 @@ class _ReturnScreenState extends State<ReturnScreen> with SingleTickerProviderSt
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
         title: const Text('Audit & Rekonsiliasi Retur Lama'),
         content: SizedBox(
-          width: 480,
+          width: AppBreakpoints.boundedDialogWidth(ctx, maxWidth: 480),
+          height: findings.isEmpty ? null : (MediaQuery.sizeOf(ctx).height * 0.55).clamp(180.0, 400.0),
           child: findings.isEmpty
               ? const Text(
                   'Bersih! Tidak ditemukan data retur anomali tanpa mutasi keluar/ledger.',
@@ -1319,14 +1332,23 @@ class _ReturnScreenState extends State<ReturnScreen> with SingleTickerProviderSt
                                 spacing: 10,
                                 runSpacing: 8,
                                 children: [
-                                  SizedBox(
-                                    width: 240,
+                                  ConstrainedBox(
+                                    constraints: const BoxConstraints(minWidth: 180, maxWidth: 250),
                                     child: DropdownButtonFormField<String>(
                                       value: condition,
+                                      isExpanded: true,
                                       isDense: true,
                                       decoration: const InputDecoration(labelText: 'Kondisi Barang'),
                                       items: ReturnConditions.all
-                                          .map((c) => DropdownMenuItem(value: c, child: Text(ReturnConditions.label(c), style: const TextStyle(fontSize: 12))))
+                                          .map((c) => DropdownMenuItem(
+                                                value: c,
+                                                child: Text(
+                                                  ReturnConditions.label(c),
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
+                                                  style: const TextStyle(fontSize: 12),
+                                                ),
+                                              ))
                                           .toList(),
                                       onChanged: (val) {
                                         if (val == null) return;
@@ -1340,14 +1362,23 @@ class _ReturnScreenState extends State<ReturnScreen> with SingleTickerProviderSt
                                       },
                                     ),
                                   ),
-                                  SizedBox(
-                                    width: 260,
+                                  ConstrainedBox(
+                                    constraints: const BoxConstraints(minWidth: 180, maxWidth: 260),
                                     child: DropdownButtonFormField<String>(
                                       value: tracksStock ? treatment : StockTreatments.noStockChange,
+                                      isExpanded: true,
                                       isDense: true,
                                       decoration: const InputDecoration(labelText: 'Perlakuan Stok'),
                                       items: (tracksStock ? StockTreatments.all : [StockTreatments.noStockChange])
-                                          .map((t) => DropdownMenuItem(value: t, child: Text(StockTreatments.label(t), style: const TextStyle(fontSize: 12))))
+                                          .map((t) => DropdownMenuItem(
+                                                value: t,
+                                                child: Text(
+                                                  StockTreatments.label(t),
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
+                                                  style: const TextStyle(fontSize: 12),
+                                                ),
+                                              ))
                                           .toList(),
                                       onChanged: tracksStock
                                           ? (val) {
@@ -1382,7 +1413,7 @@ class _ReturnScreenState extends State<ReturnScreen> with SingleTickerProviderSt
                         physics: const NeverScrollableScrollPhysics(),
                         crossAxisSpacing: 8,
                         mainAxisSpacing: 8,
-                        childAspectRatio: 2.8,
+                        mainAxisExtent: AppBreakpoints.scaledExtent(context, fixedHeight: 22, textHeight: 28),
                         children: [
                           _buildRefundChip(RefundMethods.tukarBarang, 'Tukar Barang', Icons.swap_horiz_rounded),
                           _buildRefundChip(RefundMethods.tunai, 'Tunai (Laci)', Icons.money_rounded),
@@ -1480,40 +1511,32 @@ class _ReturnScreenState extends State<ReturnScreen> with SingleTickerProviderSt
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    const Text('Nilai Barang Retur:', style: TextStyle(fontSize: 12)),
-                                    Text(CurrencyHelper.format(_totalRefundAmount), style: const TextStyle(fontWeight: FontWeight.w600)),
-                                  ],
+                                AppBreakpoints.spaceBetweenRow(
+                                  const Text('Nilai Barang Retur:', style: TextStyle(fontSize: 12)),
+                                  Text(CurrencyHelper.format(_totalRefundAmount), textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.w600)),
                                 ),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    const Text('Nilai Barang Pengganti:', style: TextStyle(fontSize: 12)),
-                                    Text(CurrencyHelper.format(_totalExchangeAmount), style: const TextStyle(fontWeight: FontWeight.w600)),
-                                  ],
+                                AppBreakpoints.spaceBetweenRow(
+                                  const Text('Nilai Barang Pengganti:', style: TextStyle(fontSize: 12)),
+                                  Text(CurrencyHelper.format(_totalExchangeAmount), textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.w600)),
                                 ),
                                 const Divider(height: 10),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(
-                                      _exchangeDifference.abs() <= 0.01
-                                          ? 'Selisih Tukar Barang:'
-                                          : (_exchangeDifference > 0 ? 'Pelanggan Bayar Tambahan:' : 'Toko Kembalikan Selisih:'),
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
+                                AppBreakpoints.spaceBetweenRow(
+                                  Text(
+                                    _exchangeDifference.abs() <= 0.01
+                                        ? 'Selisih Tukar Barang:'
+                                        : (_exchangeDifference > 0 ? 'Pelanggan Bayar Tambahan:' : 'Toko Kembalikan Selisih:'),
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
+                                  ),
+                                  Text(
+                                    CurrencyHelper.format(_exchangeDifference.abs()),
+                                    textAlign: TextAlign.right,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: _exchangeDifference > 0
+                                          ? AppTheme.primaryGreen
+                                          : (_exchangeDifference < 0 ? AppTheme.accentRed : AppTheme.textDark),
                                     ),
-                                    Text(
-                                      CurrencyHelper.format(_exchangeDifference.abs()),
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color: _exchangeDifference > 0
-                                            ? AppTheme.primaryGreen
-                                            : (_exchangeDifference < 0 ? AppTheme.accentRed : AppTheme.textDark),
-                                      ),
-                                    ),
-                                  ],
+                                  ),
                                 ),
                                 if (_exchangeDifference.abs() > 0.01) ...[
                                   const SizedBox(height: 8),
@@ -1527,6 +1550,7 @@ class _ReturnScreenState extends State<ReturnScreen> with SingleTickerProviderSt
                                                 .contains(_diffOrExcessMethod)
                                             ? _diffOrExcessMethod
                                             : RefundMethods.tunai),
+                                    isExpanded: true,
                                     isDense: true,
                                     decoration: InputDecoration(
                                       labelText: _exchangeDifference > 0
@@ -1535,16 +1559,16 @@ class _ReturnScreenState extends State<ReturnScreen> with SingleTickerProviderSt
                                     ),
                                     items: _exchangeDifference > 0
                                         ? const [
-                                            DropdownMenuItem(value: RefundMethods.tunai, child: Text('Tunai (Masuk Laci)')),
-                                            DropdownMenuItem(value: RefundMethods.transfer, child: Text('Transfer Bank')),
-                                            DropdownMenuItem(value: 'qris', child: Text('QRIS')),
-                                            DropdownMenuItem(value: RefundMethods.saldoKredit, child: Text('Potong Saldo Kredit')),
+                                            DropdownMenuItem(value: RefundMethods.tunai, child: Text('Tunai (Masuk Laci)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                            DropdownMenuItem(value: RefundMethods.transfer, child: Text('Transfer Bank', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                            DropdownMenuItem(value: 'qris', child: Text('QRIS', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                            DropdownMenuItem(value: RefundMethods.saldoKredit, child: Text('Potong Saldo Kredit', maxLines: 1, overflow: TextOverflow.ellipsis)),
                                           ]
                                         : const [
-                                            DropdownMenuItem(value: RefundMethods.tunai, child: Text('Tunai (Keluar Laci)')),
-                                            DropdownMenuItem(value: RefundMethods.transfer, child: Text('Transfer Bank')),
-                                            DropdownMenuItem(value: RefundMethods.qrisManual, child: Text('QRIS / E-Wallet Manual')),
-                                            DropdownMenuItem(value: RefundMethods.saldoKredit, child: Text('Simpan ke Saldo Kredit')),
+                                            DropdownMenuItem(value: RefundMethods.tunai, child: Text('Tunai (Keluar Laci)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                            DropdownMenuItem(value: RefundMethods.transfer, child: Text('Transfer Bank', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                            DropdownMenuItem(value: RefundMethods.qrisManual, child: Text('QRIS / E-Wallet Manual', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                            DropdownMenuItem(value: RefundMethods.saldoKredit, child: Text('Simpan ke Saldo Kredit', maxLines: 1, overflow: TextOverflow.ellipsis)),
                                           ],
                                     onChanged: (val) {
                                       if (val != null) setState(() => _diffOrExcessMethod = val);
@@ -1585,13 +1609,14 @@ class _ReturnScreenState extends State<ReturnScreen> with SingleTickerProviderSt
                                           .contains(_diffOrExcessMethod)
                                       ? _diffOrExcessMethod
                                       : RefundMethods.saldoKredit,
+                                  isExpanded: true,
                                   isDense: true,
                                   decoration: const InputDecoration(labelText: 'Tujuan Kelebihan Potong Piutang'),
                                   items: const [
-                                    DropdownMenuItem(value: RefundMethods.saldoKredit, child: Text('Saldo Kredit Pelanggan')),
-                                    DropdownMenuItem(value: RefundMethods.tunai, child: Text('Tunai (Kas Laci)')),
-                                    DropdownMenuItem(value: RefundMethods.transfer, child: Text('Transfer Bank')),
-                                    DropdownMenuItem(value: RefundMethods.qrisManual, child: Text('QRIS Manual')),
+                                    DropdownMenuItem(value: RefundMethods.saldoKredit, child: Text('Saldo Kredit Pelanggan', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                    DropdownMenuItem(value: RefundMethods.tunai, child: Text('Tunai (Kas Laci)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                    DropdownMenuItem(value: RefundMethods.transfer, child: Text('Transfer Bank', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                    DropdownMenuItem(value: RefundMethods.qrisManual, child: Text('QRIS Manual', maxLines: 1, overflow: TextOverflow.ellipsis)),
                                   ],
                                   onChanged: (v) {
                                     if (v != null) setState(() => _diffOrExcessMethod = v);
@@ -1668,15 +1693,13 @@ class _ReturnScreenState extends State<ReturnScreen> with SingleTickerProviderSt
                         ),
                       ],
                       const SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text('TOTAL NILAI RETUR', style: TextStyle(fontWeight: FontWeight.bold)),
-                          Text(
-                            CurrencyHelper.format(_totalRefundAmount),
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.primaryGreen),
-                          ),
-                        ],
+                      AppBreakpoints.spaceBetweenRow(
+                        const Text('TOTAL NILAI RETUR', style: TextStyle(fontWeight: FontWeight.bold)),
+                        Text(
+                          CurrencyHelper.format(_totalRefundAmount),
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.primaryGreen),
+                        ),
                       ),
                       const SizedBox(height: 12),
                       SizedBox(

@@ -359,11 +359,19 @@ class _ServiceFormScreenState extends State<ServiceFormScreen> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text('Foto Kondisi Perangkat:', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-                            TextButton.icon(
-                              onPressed: _addDevicePhoto,
-                              icon: const Icon(Icons.add_a_photo_rounded, size: 18),
-                              label: const Text('Tambah Foto'),
+                            const Expanded(
+                              child: Text(
+                                'Foto Kondisi Perangkat:',
+                                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Flexible(
+                              child: TextButton.icon(
+                                onPressed: _addDevicePhoto,
+                                icon: const Icon(Icons.add_a_photo_rounded, size: 18),
+                                label: const Text('Tambah Foto', overflow: TextOverflow.ellipsis),
+                              ),
                             ),
                           ],
                         ),
@@ -420,12 +428,16 @@ class _ServiceFormScreenState extends State<ServiceFormScreen> {
                         const SizedBox(height: 10),
                         DropdownButtonFormField<int?>(
                           value: techs.any((t) => t.id == _technicianId) ? _technicianId : null,
+                          isExpanded: true,
                           decoration: const InputDecoration(labelText: 'Tugaskan Teknisi'),
                           items: [
-                            const DropdownMenuItem<int?>(value: null, child: Text('Belum Ditentukan')),
+                            const DropdownMenuItem<int?>(
+                              value: null,
+                              child: Text('Belum Ditentukan', maxLines: 1, overflow: TextOverflow.ellipsis),
+                            ),
                             ...techs.map((UserModel t) => DropdownMenuItem<int?>(
                                   value: t.id,
-                                  child: Text('${t.name} (${t.roleDisplay})'),
+                                  child: Text('${t.name} (${t.roleDisplay})', maxLines: 1, overflow: TextOverflow.ellipsis),
                                 )),
                           ],
                           onChanged: (id) {

@@ -112,9 +112,13 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen> {
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
                 value: _cfg.template,
+                isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Template Struk'),
                 items: ReceiptTemplateType.all
-                    .map((t) => DropdownMenuItem(value: t, child: Text(ReceiptTemplateType.label(t))))
+                    .map((t) => DropdownMenuItem(
+                          value: t,
+                          child: Text(ReceiptTemplateType.label(t), maxLines: 1, overflow: TextOverflow.ellipsis),
+                        ))
                     .toList(),
                 onChanged: (v) {
                   if (v == null) return;
@@ -131,74 +135,67 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen> {
                 },
               ),
               const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: _cfg.paperSize,
-                      isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Format Kertas'),
-                      items: const [
-                        DropdownMenuItem(value: '58mm', child: Text('Thermal 58 mm', overflow: TextOverflow.ellipsis)),
-                        DropdownMenuItem(value: '80mm', child: Text('Thermal 80 mm', overflow: TextOverflow.ellipsis)),
-                        DropdownMenuItem(value: 'a4', child: Text('Laser A4', overflow: TextOverflow.ellipsis)),
-                        DropdownMenuItem(value: 'continuous', child: Text('Continuous Form', overflow: TextOverflow.ellipsis)),
-                      ],
-                      onChanged: (v) => setState(() => _cfg = _cfg.copyWith(paperSize: v ?? _cfg.paperSize)),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: _cfg.fontSize,
-                      isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Ukuran Font'),
-                      items: const [
-                        DropdownMenuItem(value: 'small', child: Text('Kecil', overflow: TextOverflow.ellipsis)),
-                        DropdownMenuItem(value: 'normal', child: Text('Sedang', overflow: TextOverflow.ellipsis)),
-                        DropdownMenuItem(value: 'large', child: Text('Besar', overflow: TextOverflow.ellipsis)),
-                      ],
-                      onChanged: (v) => setState(() => _cfg = _cfg.copyWith(fontSize: v ?? _cfg.fontSize)),
-                    ),
-                  ),
-                ],
+              AppBreakpoints.buildResponsivePair(
+                minPairWidth: 360,
+                spacing: 8,
+                first: DropdownButtonFormField<String>(
+                  value: _cfg.paperSize,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Format Kertas'),
+                  items: const [
+                    DropdownMenuItem(value: '58mm', child: Text('Thermal 58 mm', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: '80mm', child: Text('Thermal 80 mm', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'a4', child: Text('Laser A4', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'continuous', child: Text('Continuous Form', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  ],
+                  onChanged: (v) => setState(() => _cfg = _cfg.copyWith(paperSize: v ?? _cfg.paperSize)),
+                ),
+                second: DropdownButtonFormField<String>(
+                  value: _cfg.fontSize,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Ukuran Font'),
+                  items: const [
+                    DropdownMenuItem(value: 'small', child: Text('Kecil', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'normal', child: Text('Sedang', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'large', child: Text('Besar', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  ],
+                  onChanged: (v) => setState(() => _cfg = _cfg.copyWith(fontSize: v ?? _cfg.fontSize)),
+                ),
               ),
               const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: _cfg.headerAlignment,
-                      isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Perataan Header'),
-                      items: const [
-                        DropdownMenuItem(value: 'center', child: Text('Tengah (Center)', overflow: TextOverflow.ellipsis)),
-                        DropdownMenuItem(value: 'left', child: Text('Rata Kiri (Left)', overflow: TextOverflow.ellipsis)),
-                      ],
-                      onChanged: (v) => setState(() => _cfg = _cfg.copyWith(headerAlignment: v ?? _cfg.headerAlignment)),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: _cfg.dividerStyle,
-                      isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Garis Pemisah'),
-                      items: const [
-                        DropdownMenuItem(value: '-', child: Text('Garis Putus (----)', overflow: TextOverflow.ellipsis)),
-                        DropdownMenuItem(value: '=', child: Text('Garis Ganda (====)', overflow: TextOverflow.ellipsis)),
-                        DropdownMenuItem(value: '*', child: Text('Bintang (****)', overflow: TextOverflow.ellipsis)),
-                      ],
-                      onChanged: (v) => setState(() => _cfg = _cfg.copyWith(dividerStyle: v ?? _cfg.dividerStyle)),
-                    ),
-                  ),
-                ],
+              AppBreakpoints.buildResponsivePair(
+                minPairWidth: 360,
+                spacing: 8,
+                first: DropdownButtonFormField<String>(
+                  value: _cfg.headerAlignment,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Perataan Header'),
+                  items: const [
+                    DropdownMenuItem(value: 'center', child: Text('Tengah (Center)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'left', child: Text('Rata Kiri (Left)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  ],
+                  onChanged: (v) => setState(() => _cfg = _cfg.copyWith(headerAlignment: v ?? _cfg.headerAlignment)),
+                ),
+                second: DropdownButtonFormField<String>(
+                  value: _cfg.dividerStyle,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Garis Pemisah'),
+                  items: const [
+                    DropdownMenuItem(value: '-', child: Text('Garis Putus (----)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: '=', child: Text('Garis Ganda (====)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: '*', child: Text('Bintang (****)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  ],
+                  onChanged: (v) => setState(() => _cfg = _cfg.copyWith(dividerStyle: v ?? _cfg.dividerStyle)),
+                ),
               ),
               const SizedBox(height: 12),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('Jumlah Salinan Cetak:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                  const Expanded(
+                    child: Text('Jumlah Salinan Cetak:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                  ),
+                  const SizedBox(width: 8),
                   QuantityStepper(
                     value: _cfg.copyCount.toDouble(),
                     minValue: 1,
@@ -344,13 +341,34 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Pratinjau Struk', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textMuted)),
-              TextButton.icon(
-                icon: const Icon(Icons.print_outlined, size: 16),
-                label: Text(printerProv.defaultPrinter?.name ?? 'Pilih Printer', style: const TextStyle(fontSize: 11)),
-                onPressed: () {
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const PrinterManagementScreen()));
-                },
+              const Expanded(
+                child: Text(
+                  'Pratinjau Struk',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textMuted),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: TextButton(
+                  onPressed: () {
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => const PrinterManagementScreen()));
+                  },
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.print_outlined, size: 16),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          printerProv.defaultPrinter?.name ?? 'Pilih Printer',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),
@@ -372,7 +390,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen> {
             Text(settings.storeAddress, style: TextStyle(fontSize: _cfg.basePdfFontSize + 1, color: AppTheme.textMuted)),
           if (_cfg.showPhone)
             Text('Telp: ${settings.storePhone}', style: TextStyle(fontSize: _cfg.basePdfFontSize + 1, color: AppTheme.textMuted)),
-          Text(_cfg.dividerStyle * 28, style: const TextStyle(color: AppTheme.textMuted)),
+          Text(_cfg.dividerStyle * 28, maxLines: 1, overflow: TextOverflow.clip, style: const TextStyle(color: AppTheme.textMuted)),
           Align(
             alignment: Alignment.centerLeft,
             child: Column(
@@ -387,7 +405,7 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen> {
               ],
             ),
           ),
-          Text(_cfg.dividerStyle * 28, style: const TextStyle(color: AppTheme.textMuted)),
+          Text(_cfg.dividerStyle * 28, maxLines: 1, overflow: TextOverflow.clip, style: const TextStyle(color: AppTheme.textMuted)),
           for (final item in _sampleTransaction.items)
             Padding(
               padding: EdgeInsets.symmetric(vertical: _cfg.lineSpacing),
@@ -402,45 +420,45 @@ class _ReceiptSettingsScreenState extends State<ReceiptSettingsScreen> {
                       style: TextStyle(fontSize: _cfg.basePdfFontSize + 1),
                     ),
                   ),
-                  Text(CurrencyHelper.format(item.subtotal),
-                      style: TextStyle(fontSize: _cfg.basePdfFontSize + 1, fontWeight: FontWeight.bold)),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      CurrencyHelper.format(item.subtotal),
+                      textAlign: TextAlign.right,
+                      style: TextStyle(fontSize: _cfg.basePdfFontSize + 1, fontWeight: FontWeight.bold),
+                    ),
+                  ),
                 ],
               ),
             ),
-          Text(_cfg.dividerStyle * 28, style: const TextStyle(color: AppTheme.textMuted)),
+          Text(_cfg.dividerStyle * 28, maxLines: 1, overflow: TextOverflow.clip, style: const TextStyle(color: AppTheme.textMuted)),
           if (_cfg.showTotal) ...[
             if (_cfg.showDiscount)
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text('Diskon', style: TextStyle(fontSize: _cfg.basePdfFontSize + 1)),
-                  Text('-${CurrencyHelper.format(_sampleTransaction.discountTotal)}',
-                      style: TextStyle(fontSize: _cfg.basePdfFontSize + 1)),
-                ],
+              AppBreakpoints.spaceBetweenRow(
+                Text('Diskon', style: TextStyle(fontSize: _cfg.basePdfFontSize + 1)),
+                Text('-${CurrencyHelper.format(_sampleTransaction.discountTotal)}',
+                    textAlign: TextAlign.right,
+                    style: TextStyle(fontSize: _cfg.basePdfFontSize + 1)),
               ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('TOTAL', style: TextStyle(fontWeight: FontWeight.bold, fontSize: _cfg.basePdfFontSize + 3)),
-                Text(CurrencyHelper.format(_sampleTransaction.grandTotal),
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: _cfg.basePdfFontSize + 3, color: AppTheme.primaryGreen)),
-              ],
+            AppBreakpoints.spaceBetweenRow(
+              Text('TOTAL', style: TextStyle(fontWeight: FontWeight.bold, fontSize: _cfg.basePdfFontSize + 3)),
+              Text(CurrencyHelper.format(_sampleTransaction.grandTotal),
+                  textAlign: TextAlign.right,
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: _cfg.basePdfFontSize + 3, color: AppTheme.primaryGreen)),
             ),
           ],
           if (_cfg.showPaidAndChange) ...[
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('Bayar (TUNAI)', style: TextStyle(fontSize: _cfg.basePdfFontSize + 1)),
-                Text(CurrencyHelper.format(_sampleTransaction.amountPaid), style: TextStyle(fontSize: _cfg.basePdfFontSize + 1)),
-              ],
+            AppBreakpoints.spaceBetweenRow(
+              Text('Bayar (TUNAI)', style: TextStyle(fontSize: _cfg.basePdfFontSize + 1)),
+              Text(CurrencyHelper.format(_sampleTransaction.amountPaid),
+                  textAlign: TextAlign.right,
+                  style: TextStyle(fontSize: _cfg.basePdfFontSize + 1)),
             ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('Kembali', style: TextStyle(fontSize: _cfg.basePdfFontSize + 1)),
-                Text(CurrencyHelper.format(_sampleTransaction.changeAmount), style: TextStyle(fontSize: _cfg.basePdfFontSize + 1)),
-              ],
+            AppBreakpoints.spaceBetweenRow(
+              Text('Kembali', style: TextStyle(fontSize: _cfg.basePdfFontSize + 1)),
+              Text(CurrencyHelper.format(_sampleTransaction.changeAmount),
+                  textAlign: TextAlign.right,
+                  style: TextStyle(fontSize: _cfg.basePdfFontSize + 1)),
             ),
           ],
           if (_cfg.showQrInvoice) ...[

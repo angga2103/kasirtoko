@@ -265,14 +265,18 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
         barrierDismissible: false,
         builder: (ctx) {
           return AlertDialog(
+            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
             title: const Row(
               children: [
                 Icon(Icons.verified_rounded, color: AppTheme.primaryGreen),
                 SizedBox(width: 8),
-                Text('Absensi Berhasil!'),
+                Expanded(child: Text('Absensi Berhasil!')),
               ],
             ),
-            content: Column(
+            content: AppBreakpoints.scrollableDialogContent(
+              ctx,
+              maxWidth: 420,
+              child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -286,6 +290,7 @@ class _AttendanceCameraScreenState extends State<AttendanceCameraScreen> {
                   style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
                 ),
               ],
+            ),
             ),
             actions: [
               TextButton(

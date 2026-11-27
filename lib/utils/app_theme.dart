@@ -47,9 +47,91 @@ class AppBreakpoints {
 
   static int quickActionGridCount(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
+    final textScale = textScaleFactor(context, max: 1.6);
     if (width >= 900) return 6;
     if (width >= 600) return 4;
+    if (width < 360 && textScale >= 1.3) return 3;
     return 4;
+  }
+
+  static double textScaleFactor(BuildContext context, {double max = 1.8}) =>
+      MediaQuery.textScalerOf(context).scale(1.0).clamp(1.0, max);
+
+  static double scaledExtent(
+    BuildContext context, {
+    required double fixedHeight,
+    required double textHeight,
+    double maxScale = 1.8,
+  }) =>
+      fixedHeight + textHeight * textScaleFactor(context, max: maxScale);
+
+  static Widget buildResponsivePair({
+    required Widget first,
+    required Widget second,
+    double minPairWidth = 420,
+    double spacing = 10,
+    int firstFlex = 1,
+    int secondFlex = 1,
+    CrossAxisAlignment rowCrossAxisAlignment = CrossAxisAlignment.start,
+  }) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final threshold = minPairWidth * textScaleFactor(context, max: 1.35);
+        if (constraints.maxWidth < threshold) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              first,
+              SizedBox(height: spacing),
+              second,
+            ],
+          );
+        }
+        return Row(
+          crossAxisAlignment: rowCrossAxisAlignment,
+          children: [
+            Expanded(flex: firstFlex, child: first),
+            SizedBox(width: spacing),
+            Expanded(flex: secondFlex, child: second),
+          ],
+        );
+      },
+    );
+  }
+
+  static double boundedDialogWidth(BuildContext context, {double maxWidth = 460}) =>
+      (MediaQuery.sizeOf(context).width - 80).clamp(200.0, maxWidth);
+
+  static Widget scrollableDialogContent(
+    BuildContext context, {
+    required Widget child,
+    double maxWidth = 460,
+  }) {
+    final w = boundedDialogWidth(context, maxWidth: maxWidth);
+    return SizedBox(
+      width: w,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.72,
+        ),
+        child: SingleChildScrollView(child: child),
+      ),
+    );
+  }
+
+  static Widget spaceBetweenRow(
+    Widget left,
+    Widget right, {
+    double gap = 8,
+  }) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Expanded(child: left),
+        SizedBox(width: gap),
+        Flexible(child: right),
+      ],
+    );
   }
 }
 

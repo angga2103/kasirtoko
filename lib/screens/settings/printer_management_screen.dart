@@ -104,13 +104,14 @@ class _PrinterManagementScreenState extends State<PrinterManagementScreen> {
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
-                                      Row(
+                                      Wrap(
+                                        spacing: 6,
+                                        runSpacing: 4,
+                                        crossAxisAlignment: WrapCrossAlignment.center,
                                         children: [
-                                          Expanded(
-                                            child: Text(
-                                              p.name,
-                                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                                            ),
+                                          Text(
+                                            p.name,
+                                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                                           ),
                                           if (p.isDefault)
                                             Container(
@@ -200,13 +201,21 @@ class _PrinterManagementScreenState extends State<PrinterManagementScreen> {
                     );
                   },
                 ),
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: AppTheme.primaryGreen,
-        foregroundColor: Colors.white,
-        onPressed: () => _openPrinterForm(),
-        icon: const Icon(Icons.add_rounded),
-        label: const Text('Tambah Printer'),
-      ),
+      floatingActionButton: MediaQuery.sizeOf(context).width < 260 * AppBreakpoints.textScaleFactor(context, max: 1.5)
+          ? FloatingActionButton(
+              backgroundColor: AppTheme.primaryGreen,
+              foregroundColor: Colors.white,
+              tooltip: 'Tambah Printer',
+              onPressed: () => _openPrinterForm(),
+              child: const Icon(Icons.add_rounded),
+            )
+          : FloatingActionButton.extended(
+              backgroundColor: AppTheme.primaryGreen,
+              foregroundColor: Colors.white,
+              onPressed: () => _openPrinterForm(),
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('Tambah Printer'),
+            ),
     );
   }
 }
@@ -269,9 +278,10 @@ class _PrinterFormDialogState extends State<_PrinterFormDialog> {
       final picked = await showDialog<PairedBluetoothDevice>(
         context: context,
         builder: (ctx) => AlertDialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
           title: const Text('Pilih Printer Bluetooth Ter-pair'),
           content: SizedBox(
-            width: 360,
+            width: AppBreakpoints.boundedDialogWidth(ctx, maxWidth: 380),
             child: ListView.builder(
               shrinkWrap: true,
               itemCount: devices.length,
@@ -311,9 +321,10 @@ class _PrinterFormDialogState extends State<_PrinterFormDialog> {
       final picked = await showDialog<ConnectedUsbDevice>(
         context: context,
         builder: (ctx) => AlertDialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
           title: const Text('Pilih Printer USB OTG'),
           content: SizedBox(
-            width: 360,
+            width: AppBreakpoints.boundedDialogWidth(ctx, maxWidth: 380),
             child: ListView.builder(
               shrinkWrap: true,
               itemCount: devices.length,
@@ -343,9 +354,10 @@ class _PrinterFormDialogState extends State<_PrinterFormDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
       title: Text(widget.printer == null ? 'Tambah Printer Baru' : 'Edit Printer'),
       content: SizedBox(
-        width: 460,
+        width: (MediaQuery.sizeOf(context).width - 80).clamp(200.0, 460.0),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -360,11 +372,12 @@ class _PrinterFormDialogState extends State<_PrinterFormDialog> {
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
                 value: _category,
+                isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Kategori Printer'),
                 items: const [
-                  DropdownMenuItem(value: PrinterCategory.thermal, child: Text('Thermal (Struk / Label)')),
-                  DropdownMenuItem(value: PrinterCategory.laser, child: Text('Laser / Inkjet (A4 PDF)')),
-                  DropdownMenuItem(value: PrinterCategory.dotMatrix, child: Text('Dot Matrix (Continuous ESC/P)')),
+                  DropdownMenuItem(value: PrinterCategory.thermal, child: Text('Thermal (Struk / Label)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  DropdownMenuItem(value: PrinterCategory.laser, child: Text('Laser / Inkjet (A4 PDF)', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  DropdownMenuItem(value: PrinterCategory.dotMatrix, child: Text('Dot Matrix (Continuous ESC/P)', maxLines: 1, overflow: TextOverflow.ellipsis)),
                 ],
                 onChanged: (v) {
                   if (v == null) return;
@@ -389,36 +402,33 @@ class _PrinterFormDialogState extends State<_PrinterFormDialog> {
                 },
               ),
               const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: _connectionType,
-                      decoration: const InputDecoration(labelText: 'Koneksi'),
-                      items: const [
-                        DropdownMenuItem(value: PrinterConnectionType.bluetooth, child: Text('Bluetooth')),
-                        DropdownMenuItem(value: PrinterConnectionType.usb, child: Text('USB OTG')),
-                        DropdownMenuItem(value: PrinterConnectionType.lan, child: Text('LAN / Wi-Fi')),
-                        DropdownMenuItem(value: PrinterConnectionType.system, child: Text('Android Print PDF')),
-                      ],
-                      onChanged: (v) => setState(() => _connectionType = v ?? _connectionType),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: _paperSize,
-                      decoration: const InputDecoration(labelText: 'Ukuran Kertas'),
-                      items: const [
-                        DropdownMenuItem(value: '58mm', child: Text('Thermal 58 mm')),
-                        DropdownMenuItem(value: '80mm', child: Text('Thermal 80 mm')),
-                        DropdownMenuItem(value: 'a4', child: Text('A4')),
-                        DropdownMenuItem(value: 'continuous', child: Text('Continuous 80-col')),
-                      ],
-                      onChanged: (v) => setState(() => _paperSize = v ?? _paperSize),
-                    ),
-                  ),
-                ],
+              AppBreakpoints.buildResponsivePair(
+                minPairWidth: 360,
+                spacing: 8,
+                first: DropdownButtonFormField<String>(
+                  value: _connectionType,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Koneksi'),
+                  items: const [
+                    DropdownMenuItem(value: PrinterConnectionType.bluetooth, child: Text('Bluetooth', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: PrinterConnectionType.usb, child: Text('USB OTG', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: PrinterConnectionType.lan, child: Text('LAN / Wi-Fi', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: PrinterConnectionType.system, child: Text('Android Print PDF', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  ],
+                  onChanged: (v) => setState(() => _connectionType = v ?? _connectionType),
+                ),
+                second: DropdownButtonFormField<String>(
+                  value: _paperSize,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Ukuran Kertas'),
+                  items: const [
+                    DropdownMenuItem(value: '58mm', child: Text('Thermal 58 mm', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: '80mm', child: Text('Thermal 80 mm', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'a4', child: Text('A4', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    DropdownMenuItem(value: 'continuous', child: Text('Continuous 80-col', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  ],
+                  onChanged: (v) => setState(() => _paperSize = v ?? _paperSize),
+                ),
               ),
               const SizedBox(height: 10),
               if (_connectionType != PrinterConnectionType.system) ...[
