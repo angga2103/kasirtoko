@@ -19,6 +19,7 @@ import '../../services/server_lifecycle_bridge.dart';
 import '../../utils/app_theme.dart';
 import '../../widgets/image_picker_cropper.dart';
 import '../employees/employee_management_screen.dart';
+import 'backup_management_screen.dart';
 import 'multi_device_server_screen.dart';
 import 'printer_management_screen.dart';
 import 'receipt_settings_screen.dart';
@@ -813,10 +814,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                       const SizedBox(height: 6),
                       const Text(
-                        'Cadangkan seluruh database SQLite ke perangkat lokal, Google Drive, atau bagikan via WhatsApp.',
+                        'Cadangkan seluruh database SQLite secara terenkripsi (.ktbak AES-256-GCM) ke penyimpanan terpisah, folder eksternal, atau bagikan manual.',
                         style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.security_update_good_rounded),
+                          label: const Text('Kelola Backup Otomatis, Enkripsi & Riwayat'),
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => const BackupManagementScreen()),
+                            );
+                          },
+                        ),
+                      ),
+                      const SizedBox(height: 10),
                       Row(
                         children: [
                           Expanded(
@@ -824,7 +839,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               icon: const Icon(Icons.cloud_upload_rounded),
                               label: const Text('Backup Data'),
                               onPressed: () async {
-                                final res = await BackupService.createAndShareBackup();
+                                final res = await BackupService.createAndShareBackup(
+                                  actorName: Provider.of<AuthProvider>(context, listen: false).currentUser?.name ?? 'Admin',
+                                );
                                 if (context.mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
@@ -842,6 +859,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               icon: const Icon(Icons.restore_page_rounded),
                               label: const Text('Restore Data'),
                               onPressed: () async {
+                                final confirmRestore = await showDialog<bool>(
+                                  context: context,
+                                  builder: (ctx) => AlertDialog(
+                                    title: const Text('Konfirmasi Restore Database'),
+                                    content: const Text(
+                                      'Sistem akan membuat safety snapshot terlebih dahulu sebelum mengganti database aktif. Pilih file .ktbak atau .db untuk dipulihkan.',
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(ctx, false),
+                                        child: const Text('Batal'),
+                                      ),
+                                      ElevatedButton(
+                                        onPressed: () => Navigator.pop(ctx, true),
+                                        child: const Text('Pilih File & Restore'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                                if (confirmRestore != true || !context.mounted) return;
                                 final settingsProv = Provider.of<SettingsProvider>(context, listen: false);
                                 final productProv = Provider.of<ProductProvider>(context, listen: false);
                                 final cashFlowProv = Provider.of<CashFlowProvider>(context, listen: false);
@@ -851,7 +888,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 final authProv = Provider.of<AuthProvider>(context, listen: false);
                                 final messenger = ScaffoldMessenger.of(context);
 
-                                final res = await BackupService.restoreDatabase();
+                                final res = await BackupService.restoreDatabase(
+                                  actorName: authProv.currentUser?.name ?? 'Admin',
+                                );
                                 if (res.success) {
                                   // Re-sync all active providers immediately without crashing!
                                   await settingsProv.loadSettings();

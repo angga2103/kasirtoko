@@ -49,6 +49,21 @@ class _AuditLogScreenState extends State<AuditLogScreen> {
     {'value': 'koreksi_absensi', 'label': 'Koreksi Absensi'},
     {'value': 'karyawan_tambah', 'label': 'Tambah Karyawan'},
     {'value': 'karyawan_ubah', 'label': 'Ubah Hak/Data Karyawan'},
+    {'value': 'karyawan_aktif', 'label': 'Aktifkan Karyawan'},
+    {'value': 'karyawan_nonaktif', 'label': 'Nonaktifkan Karyawan'},
+    {'value': 'login_staff_terminal', 'label': 'Login Staff Terminal'},
+    {'value': 'login_staff_ditolak_batas_sesi', 'label': 'Login Staff Ditolak (Batas Sesi)'},
+    {'value': 'logout_staff_terminal', 'label': 'Logout Staff Terminal'},
+    {'value': 'cabut_sesi_staff', 'label': 'Cabut Sesi Perangkat'},
+    {'value': 'cabut_semua_sesi_akun', 'label': 'Cabut Semua Sesi Akun'},
+    {'value': 'cabut_terminal', 'label': 'Cabut Akses Terminal'},
+    {'value': 'rotasi_kredensial_terminal', 'label': 'Rotasi Token Terminal'},
+    {'value': 'ubah_kebijakan_sesi', 'label': 'Ubah Kebijakan Batas Sesi'},
+    {'value': 'backup_otomatis', 'label': 'Backup Otomatis (.ktbak)'},
+    {'value': 'backup_manual', 'label': 'Backup Manual (.ktbak)'},
+    {'value': 'backup_gagal', 'label': 'Backup Gagal / Peringatan'},
+    {'value': 'restore_database', 'label': 'Restore Database'},
+    {'value': 'failover_jaringan', 'label': 'Profil Jaringan / Failover'},
   ];
 
   @override

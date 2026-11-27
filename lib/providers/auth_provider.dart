@@ -1,17 +1,21 @@
 import 'package:flutter/foundation.dart';
 import '../database/db_helper.dart';
+import '../database/multi_device_dao.dart';
 import '../models/audit_log.dart';
+import '../models/operational_models.dart';
 import '../models/user.dart';
 import '../utils/security_helper.dart';
 
 class AuthProvider extends ChangeNotifier {
   UserModel? _currentUser;
   List<UserModel> _users = [];
+  List<SessionPolicyModel> _sessionPolicies = [];
   bool _isLoading = false;
   String? _lastAuthError;
 
   UserModel? get currentUser => _currentUser;
   List<UserModel> get users => _users;
+  List<SessionPolicyModel> get sessionPolicies => _sessionPolicies;
   List<UserModel> get activeUsers => _users.where((u) => u.isActive).toList();
   List<UserModel> get technicians => _users
       .where((u) => u.isActive && (u.isTechnician || u.hasPermission(AppPermissions.manageService)))
@@ -35,7 +39,49 @@ class AuthProvider extends ChangeNotifier {
 
   Future<void> loadUsers({bool includeInactive = true}) async {
     _users = await DatabaseHelper.instance.getUsers(includeInactive: includeInactive);
+    _sessionPolicies = await DatabaseHelper.instance.getSessionPolicies();
     notifyListeners();
+  }
+
+  int effectiveMaxSessionsFor(UserModel user) {
+    if (user.maxActiveSessions != null && user.maxActiveSessions! > 0) {
+      return user.maxActiveSessions!;
+    }
+    final policy = _sessionPolicies.where((p) => p.role == user.role).firstOrNull;
+    return policy?.maxActiveSessions ?? AppRoles.defaultMaxActiveSessions(user.role);
+  }
+
+  Future<String?> updateRoleSessionPolicy(String role, int maxSessions) async {
+    if (!hasPermission(AppPermissions.manageEmployees)) {
+      return 'Tidak memiliki izin mengelola kebijakan sesi karyawan.';
+    }
+    if (role == AppRoles.owner && !isOwner) {
+      return 'Hanya Owner yang dapat mengubah batas sesi untuk role Owner.';
+    }
+    await DatabaseHelper.instance.upsertSessionPolicy(
+      role,
+      maxSessions,
+      actorName: _currentUser?.name ?? 'Admin',
+    );
+    _sessionPolicies = await DatabaseHelper.instance.getSessionPolicies();
+    notifyListeners();
+    return null;
+  }
+
+  Future<String?> revokeAllSessionsForEmployee(UserModel target) async {
+    if (!hasPermission(AppPermissions.manageEmployees) && !isOwner && !isAdmin) {
+      return 'Tidak memiliki izin mencabut sesi karyawan.';
+    }
+    if (target.id == null) return 'ID karyawan tidak valid.';
+    final revokedCount = await MultiDeviceDao().revokeAllSessionsForCashier(
+      target.id!,
+      actorName: _currentUser?.name ?? 'Admin',
+      reason: 'Dicabut dari Manajemen Karyawan oleh ${_currentUser?.name ?? "Admin"}',
+    );
+    notifyListeners();
+    return revokedCount == 0
+        ? 'Tidak ada sesi terminal aktif untuk ${target.name}.'
+        : null;
   }
 
   Future<bool> loginWithPin(String pin) async {
@@ -95,6 +141,7 @@ class AuthProvider extends ChangeNotifier {
     String? photoPath,
     required Map<String, bool> permissions,
     bool isActive = true,
+    int? maxActiveSessions,
   }) async {
     if (!hasPermission(AppPermissions.manageEmployees)) {
       return 'Anda tidak memiliki hak akses manajemen karyawan.';
@@ -191,6 +238,7 @@ class AuthProvider extends ChangeNotifier {
       photoPath: photoPath ?? existing?.photoPath,
       permissions: finalPermissions,
       isActive: isActive,
+      maxActiveSessions: maxActiveSessions != null && maxActiveSessions > 0 ? maxActiveSessions : null,
     );
 
     if (existingId == null) {
@@ -218,7 +266,11 @@ class AuthProvider extends ChangeNotifier {
     if (target.isOwner && !isActive) {
       return 'Akun Pemilik (Owner) tidak dapat dinonaktifkan.';
     }
-    await DatabaseHelper.instance.setUserActive(target.id!, isActive);
+    await DatabaseHelper.instance.setUserActive(
+      target.id!,
+      isActive,
+      actorName: _currentUser?.name ?? 'Admin',
+    );
     await logAction(
       isActive ? 'karyawan_aktif' : 'karyawan_nonaktif',
       '${isActive ? "Mengaktifkan" : "Menonaktifkan"} karyawan ${target.name}',

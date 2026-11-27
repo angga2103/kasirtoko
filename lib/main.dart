@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import 'providers/attendance_provider.dart';
 import 'providers/auth_provider.dart';
+import 'providers/backup_provider.dart';
 import 'providers/cash_flow_provider.dart';
 import 'providers/customer_provider.dart';
 import 'providers/debt_provider.dart';
@@ -52,6 +53,7 @@ class KasirTokoApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => PrinterProvider()..loadPrinters()),
         ChangeNotifierProvider(create: (_) => ServiceOrderProvider()..loadOrders()),
         ChangeNotifierProvider(create: (_) => PosServerProvider()..initialize()),
+        ChangeNotifierProvider(create: (_) => BackupProvider()..initialize()),
       ],
       child: MaterialApp(
         title: 'KasirToko Admin POS',

@@ -39,6 +39,22 @@ class AppRoles {
         return role;
     }
   }
+
+  static int defaultMaxActiveSessions(String role) {
+    switch (role) {
+      case supervisor:
+      case admin:
+        return 2;
+      case owner:
+        return 3;
+      case cashier:
+      case warehouse:
+      case technician:
+      case delivery:
+      default:
+        return 1;
+    }
+  }
 }
 
 class AppPermissions {
@@ -224,6 +240,7 @@ class UserModel {
   final String? photoPath;
   final Map<String, bool> permissions;
   final bool isActive;
+  final int? maxActiveSessions;
 
   UserModel({
     this.id,
@@ -243,6 +260,7 @@ class UserModel {
     this.photoPath,
     Map<String, bool>? permissions,
     this.isActive = true,
+    this.maxActiveSessions,
   }) : permissions = permissions ?? AppPermissions.defaultForRole(role);
 
   bool get isOwner => role == AppRoles.owner;
@@ -285,6 +303,7 @@ class UserModel {
       'photo_path': photoPath,
       'permissions_json': jsonEncode(permissions),
       'is_active': isActive ? 1 : 0,
+      'max_active_sessions': maxActiveSessions,
     };
   }
 
@@ -330,6 +349,7 @@ class UserModel {
       photoPath: map['photo_path'] as String?,
       permissions: perms,
       isActive: (map['is_active'] ?? 1) == 1,
+      maxActiveSessions: (map['max_active_sessions'] as num?)?.toInt(),
     );
   }
 
@@ -352,6 +372,8 @@ class UserModel {
     String? photoPath,
     Map<String, bool>? permissions,
     bool? isActive,
+    int? maxActiveSessions,
+    bool clearMaxActiveSessions = false,
   }) {
     return UserModel(
       id: id ?? this.id,
@@ -371,6 +393,7 @@ class UserModel {
       photoPath: photoPath ?? this.photoPath,
       permissions: permissions ?? Map<String, bool>.from(this.permissions),
       isActive: isActive ?? this.isActive,
+      maxActiveSessions: clearMaxActiveSessions ? null : (maxActiveSessions ?? this.maxActiveSessions),
     );
   }
 }

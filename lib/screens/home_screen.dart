@@ -9,6 +9,7 @@ import '../models/stock_opname.dart';
 import '../models/transaction.dart';
 import '../models/user.dart';
 import '../providers/auth_provider.dart';
+import '../providers/backup_provider.dart';
 import '../providers/cash_flow_provider.dart';
 import '../providers/debt_provider.dart';
 import '../providers/product_provider.dart';
@@ -36,6 +37,7 @@ import 'reports/daily_report_screen.dart';
 import 'returns/return_screen.dart';
 import 'scanner/barcode_scanner_screen.dart';
 import 'service/service_list_screen.dart';
+import 'settings/backup_management_screen.dart';
 import 'settings/multi_device_server_screen.dart';
 import 'settings/printer_management_screen.dart';
 import 'settings/receipt_settings_screen.dart';
@@ -838,8 +840,19 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       if (auth.hasPermission(AppPermissions.manageStoreSettings))
         _ModuleItem(
+          title: 'Backup Data',
+          subtitle: (context.watch<BackupProvider?>()?.hasWarning ?? false)
+              ? 'Perlu Perhatian'
+              : 'Auto .ktbak',
+          badge: (context.watch<BackupProvider?>()?.hasWarning ?? false) ? '!' : null,
+          icon: Icons.backup_rounded,
+          color: Colors.teal,
+          onTap: () => _pushAndRefresh(const BackupManagementScreen()),
+        ),
+      if (auth.hasPermission(AppPermissions.manageStoreSettings))
+        _ModuleItem(
           title: 'Pengaturan Toko',
-          subtitle: 'Profil & Backup',
+          subtitle: 'Profil & Cetak',
           icon: Icons.settings_rounded,
           color: AppTheme.darkBg,
           onTap: () => _pushAndRefresh(const SettingsScreen()),

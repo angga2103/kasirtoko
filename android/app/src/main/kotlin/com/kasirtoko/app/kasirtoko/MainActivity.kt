@@ -2,6 +2,7 @@ package com.kasirtoko.app.kasirtoko
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
@@ -17,12 +18,17 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
-import android.net.Uri
+import android.os.StatFs
+import android.provider.DocumentsContract
 import android.provider.Settings
+import java.io.File
+import java.io.FileInputStream
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -48,9 +54,11 @@ class MainActivity : FlutterActivity() {
         private const val CHANNEL = "com.kasirtoko.app/hardware"
         private const val SECURITY_CHANNEL = "com.kasirtoko.app/security"
         private const val SERVER_LIFECYCLE_CHANNEL = "com.kasirtoko.app/server_lifecycle"
+        private const val BACKUP_CHANNEL = "com.kasirtoko.app/backup"
         private const val ACTION_USB_PERMISSION = "com.kasirtoko.app.USB_PERMISSION"
         private const val REQ_BT_PERMISSIONS = 9101
         private const val REQ_NOTIFICATION_PERMISSION = 9102
+        private const val REQ_SAF_BACKUP_TREE = 9103
         private const val KEYSTORE_PROVIDER = "AndroidKeyStore"
         private const val PEPPER_KEK_ALIAS = "kasirtoko_pepper_kek_v1"
         private const val VAULT_KEK_ALIAS = "kasirtoko_vault_kek_v1"
@@ -66,6 +74,7 @@ class MainActivity : FlutterActivity() {
     private val cryptoExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var toneGenerator: ToneGenerator? = null
+    private var pendingSafTreeResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -278,6 +287,108 @@ class MainActivity : FlutterActivity() {
                 }
 
                 else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, BACKUP_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getAvailableStorageBytes" -> {
+                    val rawPath = call.argument<String>("path")
+                    try {
+                        val targetDir = if (!rawPath.isNullOrBlank()) File(rawPath) else filesDir
+                        val probe = if (targetDir.exists()) targetDir else filesDir
+                        val stat = StatFs(probe.absolutePath)
+                        result.success(stat.availableBytes)
+                    } catch (e: Exception) {
+                        result.success(-1L)
+                    }
+                }
+
+                "getExternalBackupDir" -> {
+                    try {
+                        val ext = getExternalFilesDir("backups")
+                        if (ext != null && !ext.exists()) ext.mkdirs()
+                        result.success(ext?.absolutePath)
+                    } catch (e: Exception) {
+                        result.success(null)
+                    }
+                }
+
+                "pickBackupFolderTree" -> {
+                    if (pendingSafTreeResult != null) {
+                        result.error("BUSY", "Pemilih folder SAF masih terbuka.", null)
+                        return@setMethodCallHandler
+                    }
+                    pendingSafTreeResult = result
+                    try {
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                            addFlags(
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+                            )
+                        }
+                        startActivityForResult(intent, REQ_SAF_BACKUP_TREE)
+                    } catch (e: Exception) {
+                        pendingSafTreeResult = null
+                        result.error("SAF_UNAVAILABLE", e.message, null)
+                    }
+                }
+
+                "copyBackupToTreeUri" -> {
+                    val treeUriStr = call.argument<String>("treeUri") ?: ""
+                    val fileName = call.argument<String>("fileName") ?: ""
+                    val sourcePath = call.argument<String>("sourcePath") ?: ""
+                    if (treeUriStr.isBlank() || fileName.isBlank() || sourcePath.isBlank()) {
+                        result.error("INVALID_ARGS", "Parameter SAF copy tidak lengkap.", null)
+                        return@setMethodCallHandler
+                    }
+                    ioExecutor.execute {
+                        try {
+                            val treeUri = Uri.parse(treeUriStr)
+                            val docId = DocumentsContract.getTreeDocumentId(treeUri)
+                            val dirUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+                            val outUri = DocumentsContract.createDocument(
+                                contentResolver,
+                                dirUri,
+                                "application/octet-stream",
+                                fileName
+                            ) ?: throw IllegalStateException("Gagal membuat file di folder SAF.")
+                            contentResolver.openOutputStream(outUri)?.use { out ->
+                                FileInputStream(File(sourcePath)).use { input ->
+                                    input.copyTo(out)
+                                }
+                            } ?: throw IllegalStateException("Output stream SAF tidak tersedia.")
+                            mainHandler.post { result.success(outUri.toString()) }
+                        } catch (e: Exception) {
+                            mainHandler.post { result.error("SAF_WRITE_FAILED", e.message, null) }
+                        }
+                    }
+                }
+
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_SAF_BACKUP_TREE) {
+            val res = pendingSafTreeResult
+            pendingSafTreeResult = null
+            if (res == null) return
+            if (resultCode == Activity.RESULT_OK && data?.data != null) {
+                val uri = data.data!!
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                } catch (_: Exception) {}
+                res.success(uri.toString())
+            } else {
+                res.success(null)
             }
         }
     }

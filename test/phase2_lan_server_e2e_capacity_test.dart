@@ -689,6 +689,7 @@ void main() {
       ) async {
         await DatabaseHelper.instance.closeTestDatabase();
         final db = await DatabaseHelper.instance.openTestDatabase();
+        await DatabaseHelper.instance.upsertSessionPolicy('cashier', terminalCount);
         final dao = MultiDeviceDao();
 
         const double initialStock = 100.0;

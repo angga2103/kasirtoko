@@ -14,6 +14,7 @@ import '../../models/shift.dart';
 import '../../models/user.dart';
 import '../../utils/security_helper.dart';
 import 'authoritative_checkout_service.dart';
+import 'lan_discovery_service.dart';
 import 'print_queue_worker.dart';
 import 'request_security.dart';
 import 'tls_certificate_manager.dart';
@@ -40,6 +41,8 @@ class _ConnectedWsClient {
   final WebSocket socket;
   final String terminalId;
   final String terminalName;
+  final int? sessionId;
+  final String rawSessionToken;
   int? cashierId;
   String cashierName;
   final DateTime connectedAt;
@@ -49,6 +52,8 @@ class _ConnectedWsClient {
     required this.socket,
     required this.terminalId,
     required this.terminalName,
+    this.sessionId,
+    this.rawSessionToken = '',
     this.cashierId,
     this.cashierName = '',
     required this.connectedAt,
@@ -77,7 +82,11 @@ class LanPosServer {
   final RequestSecurityValidator _securityValidator;
   final AuthoritativeCheckoutService _checkoutService;
   final PrintQueueWorker _printWorker;
-  final String serverId;
+  final LanDiscoveryResponder _discoveryResponder = LanDiscoveryResponder();
+  final String? _configuredServerId;
+  String _resolvedServerId = 'KASIRTOKO-ADMIN-1';
+  List<String> _advertisedIps = const [];
+  String Function()? activeNetworkModeResolver;
   final String appVersion;
   final void Function()? onConnectionsChanged;
 
@@ -94,23 +103,34 @@ class LanPosServer {
     RequestSecurityValidator? securityValidator,
     AuthoritativeCheckoutService? checkoutService,
     PrintQueueWorker? printWorker,
-    this.serverId = 'KASIRTOKO-ADMIN-1',
-    this.appVersion = '1.1.0',
+    String? serverId,
+    this.appVersion = '1.2.0',
     this.onConnectionsChanged,
+    this.activeNetworkModeResolver,
   })  : _dbHelper = dbHelper ?? DatabaseHelper.instance,
         _dao = dao ?? MultiDeviceDao(dbHelper: dbHelper),
         _certManager = certManager ?? TlsCertificateManager(),
         _securityValidator = securityValidator ?? RequestSecurityValidator(),
         _checkoutService = checkoutService ??
             AuthoritativeCheckoutService(dbHelper: dbHelper, dao: dao),
-        _printWorker = printWorker ?? PrintQueueWorker(dbHelper: dbHelper, dao: dao);
+        _printWorker = printWorker ?? PrintQueueWorker(dbHelper: dbHelper, dao: dao),
+        _configuredServerId = serverId {
+    if (serverId != null && serverId.trim().isNotEmpty) {
+      _resolvedServerId = serverId.trim();
+    }
+  }
 
+  String get serverId => _resolvedServerId;
   bool get isRunning => _server != null;
   int get port => _boundPort;
   TlsServerIdentity? get identity => _identity;
   DateTime? get startedAt => _startedAt;
   PrintQueueWorker get printWorker => _printWorker;
   AuthoritativeCheckoutService get checkoutService => _checkoutService;
+
+  void updateAdvertisedIps(List<String> ips) {
+    _advertisedIps = List<String>.from(ips);
+  }
 
   List<ConnectedTerminalSnapshot> get connectedTerminals => _wsClients.values
       .map((c) => ConnectedTerminalSnapshot(
@@ -127,8 +147,14 @@ class LanPosServer {
     InternetAddress? bindAddress,
     int port = 8443,
     List<String> extraIpAddresses = const [],
+    bool enableUdpDiscovery = true,
   }) async {
     if (_server != null) return;
+    _resolvedServerId = (_configuredServerId != null && _configuredServerId.trim().isNotEmpty)
+        ? _configuredServerId.trim()
+        : await _dbHelper.getOrCreateServerId();
+    _advertisedIps = List<String>.from(extraIpAddresses);
+
     final storeName = await _dbHelper.getSetting('store_name', defaultValue: 'KasirToko POS');
     _identity = await _certManager.getOrCreateIdentity(
       commonName: storeName,
@@ -155,10 +181,29 @@ class LanPosServer {
       cancelOnError: false,
     );
 
+    if (enableUdpDiscovery) {
+      unawaited(_discoveryResponder.start(
+        serverIdProvider: () => _resolvedServerId,
+        portProvider: () => _boundPort,
+        ipsProvider: () => _advertisedIps,
+        networkModeProvider: () => activeNetworkModeResolver?.call() ?? _inferActiveNetworkMode(_advertisedIps),
+      ));
+    }
+
     _printWorker.scheduleDrain();
   }
 
+  static String _inferActiveNetworkMode(List<String> ips) {
+    final hasHotspot = ips.any(
+      (ip) => ip.startsWith('192.168.43.') || ip.startsWith('192.168.137.') || ip.startsWith('172.20.10.'),
+    );
+    if (hasHotspot && ips.length == 1) return 'backup_hotspot';
+    if (ips.any((ip) => ip != '127.0.0.1')) return 'primary_router';
+    return 'local';
+  }
+
   Future<void> stop() async {
+    await _discoveryResponder.stop();
     final srv = _server;
     _server = null;
     _boundPort = 0;
@@ -210,14 +255,47 @@ class LanPosServer {
     }
     if (eventType == 'session_revoked') {
       final cashierId = (data['cashier_id'] as num?)?.toInt();
-      if (cashierId != null) {
-        for (final client in _wsClients.values.where((c) => c.cashierId == cashierId)) {
-          _sendWsFrame(client.socket, eventType, data);
-        }
-      }
+      final targetTerminalId = (data['terminal_id'] ?? '').toString().trim();
+      final targetSessionId = (data['session_id'] as num?)?.toInt();
+      unawaited(_closeRevokedSessionSockets(
+        cashierId: cashierId,
+        terminalId: targetTerminalId.isEmpty ? null : targetTerminalId,
+        sessionId: targetSessionId,
+        data: data,
+      ));
       return;
     }
     unawaited(_broadcastWs(eventType, data));
+  }
+
+  Future<void> _closeRevokedSessionSockets({
+    int? cashierId,
+    String? terminalId,
+    int? sessionId,
+    required Map<String, dynamic> data,
+  }) async {
+    final matching = _wsClients.entries.where((e) {
+      final c = e.value;
+      if (sessionId != null && c.sessionId != null) {
+        return c.sessionId == sessionId;
+      }
+      if (terminalId != null && c.terminalId != terminalId) {
+        return false;
+      }
+      if (cashierId != null && c.cashierId != cashierId) {
+        return false;
+      }
+      return cashierId != null || terminalId != null;
+    }).toList();
+
+    for (final entry in matching) {
+      _sendWsFrame(entry.value.socket, 'session_revoked', data);
+      try {
+        await entry.value.socket.close(4001, 'Session revoked');
+      } catch (_) {}
+      _wsClients.remove(entry.key);
+    }
+    if (matching.isNotEmpty) onConnectionsChanged?.call();
   }
 
   Future<void> _sendAndCloseTerminal(
@@ -539,6 +617,9 @@ class LanPosServer {
       await _sendError(req, 401, res.failure!.errorCode, res.failure!.message);
       return null;
     }
+    if (res.ok!.session.id != null && isRunning) {
+      unawaited(_dao.touchSessionLastSeen(res.ok!.session.id!));
+    }
     return res.ok;
   }
 
@@ -559,12 +640,15 @@ class LanPosServer {
     final sessionCtx = await _authenticateSession(req, deviceCtx.terminal);
     if (sessionCtx == null) return;
 
+    final rawToken = _extractBearer(req) ?? '';
     final socket = await WebSocketTransformer.upgrade(req);
     final connKey = '${deviceCtx.terminal.terminalId}#${DateTime.now().microsecondsSinceEpoch}';
     final client = _ConnectedWsClient(
       socket: socket,
       terminalId: deviceCtx.terminal.terminalId,
       terminalName: deviceCtx.terminal.terminalName,
+      sessionId: sessionCtx.session.id,
+      rawSessionToken: rawToken,
       cashierId: sessionCtx.cashier.id,
       cashierName: sessionCtx.cashier.name,
       connectedAt: DateTime.now(),
@@ -576,14 +660,18 @@ class LanPosServer {
     // Immediate hello frame for delta catch-up
     final settings = await _dbHelper.getAllSettings();
     final syncVer = await _dao.getCatalogSyncVersion();
+    final endpoints = await _dbHelper.getServerNetworkEndpoints();
     final shift = await _dbHelper.getCurrentOpenShift(
       cashierId: sessionCtx.cashier.id,
       terminalId: deviceCtx.terminal.terminalId,
     );
     _sendWsFrame(socket, 'hello', {
       'protocol_version': protocolVersion,
+      'server_id': serverId,
       'sync_version': syncVer,
       'drawer_mode': DrawerMode.normalize(settings['drawer_mode']),
+      'network_mode': activeNetworkModeResolver?.call() ?? _inferActiveNetworkMode(_advertisedIps),
+      'endpoints': endpoints.where((e) => e.isActive && e.effectiveUrl.isNotEmpty).map((e) => e.toApiJson()).toList(),
       'heartbeat_interval_sec': heartbeatIntervalSeconds,
       'current_shift': shift != null ? _shiftToJson(shift) : null,
     });
@@ -594,6 +682,27 @@ class LanPosServer {
         try {
           final decoded = jsonDecode(rawMsg.toString());
           if (decoded is Map && decoded['type'] == 'ping') {
+            if (client.rawSessionToken.isNotEmpty) {
+              final sessionCheck = await _dao.validateSession(
+                rawSessionToken: client.rawSessionToken,
+                terminalId: client.terminalId,
+              );
+              if (sessionCheck.failure != null) {
+                _sendWsFrame(socket, 'session_revoked', {
+                  'cashier_id': client.cashierId,
+                  'terminal_id': client.terminalId,
+                  'session_id': client.sessionId,
+                  'reason': sessionCheck.failure!.message,
+                });
+                try {
+                  await socket.close(4001, 'Session revoked');
+                } catch (_) {}
+                return;
+              }
+              if (client.sessionId != null) {
+                unawaited(_dao.touchSessionLastSeen(client.sessionId!));
+              }
+            }
             final curSync = await _dao.getCatalogSyncVersion();
             final curSettings = await _dbHelper.getAllSettings();
             final curShift = await _dbHelper.getCurrentOpenShift(
@@ -602,8 +711,10 @@ class LanPosServer {
             );
             _sendWsFrame(socket, 'pong', {
               'ts': decoded['ts'],
+              'server_id': serverId,
               'sync_version': curSync,
               'drawer_mode': DrawerMode.normalize(curSettings['drawer_mode']),
+              'network_mode': activeNetworkModeResolver?.call() ?? _inferActiveNetworkMode(_advertisedIps),
               'shift_open': curShift?.isOpen ?? false,
             });
           }
@@ -625,6 +736,7 @@ class LanPosServer {
 
   Future<void> _handleHealth(HttpRequest req) async {
     final settings = await _dbHelper.getAllSettings();
+    final endpoints = await _dbHelper.getServerNetworkEndpoints();
     final now = DateTime.now();
     await _sendOk(req, {
       'status': 'ok',
@@ -633,6 +745,10 @@ class LanPosServer {
       'protocol_version': protocolVersion,
       'store_name': settings['store_name'] ?? 'KasirToko',
       'drawer_mode': DrawerMode.normalize(settings['drawer_mode']),
+      'network_mode': activeNetworkModeResolver?.call() ?? _inferActiveNetworkMode(_advertisedIps),
+      'endpoints': endpoints.where((e) => e.isActive && e.effectiveUrl.isNotEmpty).map((e) => e.toApiJson()).toList(),
+      'advertised_ips': _advertisedIps,
+      'port': _boundPort,
       'cert_pin_short': _identity?.shortPin ?? '',
       'server_time': now.toIso8601String(),
       'server_time_ms': now.millisecondsSinceEpoch,
@@ -653,7 +769,9 @@ class LanPosServer {
         deviceUuid: (json['device_uuid'] ?? '').toString(),
       );
       final settings = await _dbHelper.getAllSettings();
+      final endpoints = await _dbHelper.getServerNetworkEndpoints();
       await _sendOk(req, {
+        'server_id': serverId,
         'terminal_id': res.terminal.terminalId,
         'terminal_code': res.terminal.terminalCode,
         'terminal_name': res.terminal.terminalName,
@@ -661,6 +779,8 @@ class LanPosServer {
         'device_secret': res.deviceSecret,
         'store_name': settings['store_name'] ?? 'KasirToko',
         'drawer_mode': DrawerMode.normalize(settings['drawer_mode']),
+        'network_mode': activeNetworkModeResolver?.call() ?? _inferActiveNetworkMode(_advertisedIps),
+        'endpoints': endpoints.where((e) => e.isActive && e.effectiveUrl.isNotEmpty).map((e) => e.toApiJson()).toList(),
         'assigned_cash_register_id': res.terminal.assignedRegisterId,
         'assigned_register': res.assignedRegister?.toMap(),
         'allow_auto_open_drawer': res.terminal.allowAutoOpenDrawer,
@@ -774,19 +894,42 @@ class LanPosServer {
       cashierId: cashier.id,
       terminalId: terminal.terminalId,
     );
-    final issued = await _dao.issueSession(
-      terminalId: terminal.terminalId,
-      cashier: cashier,
-      shiftId: shift?.id,
-    );
+    late Map<String, dynamic> issued;
+    try {
+      issued = await _dao.issueSession(
+        terminalId: terminal.terminalId,
+        cashier: cashier,
+        shiftId: shift?.id,
+        deviceName: terminal.terminalName,
+      );
+    } on SessionLimitExceededException catch (e) {
+      await _sendError(
+        req,
+        409,
+        'SESSION_LIMIT_EXCEEDED',
+        e.message,
+        details: {
+          'active_count': e.activeCount,
+          'max_active_sessions': e.maxAllowed,
+          'active_devices': e.activeDevices,
+        },
+      );
+      return;
+    }
     final settings = await _dbHelper.getAllSettings();
+    final endpoints = await _dbHelper.getServerNetworkEndpoints();
 
     await _sendOk(req, {
+      'server_id': serverId,
       'session_token': issued['session_token'],
       'expires_at': issued['expires_at'],
       'issued_at': issued['issued_at'],
+      'max_active_sessions': issued['max_active_sessions'],
+      'active_session_count': issued['active_session_count'],
       'cashier': _cashierToSafeJson(cashier),
       'drawer_mode': DrawerMode.normalize(settings['drawer_mode']),
+      'network_mode': activeNetworkModeResolver?.call() ?? _inferActiveNetworkMode(_advertisedIps),
+      'endpoints': endpoints.where((e) => e.isActive && e.effectiveUrl.isNotEmpty).map((e) => e.toApiJson()).toList(),
       'terminal': terminal.toPublicJson(),
       'current_shift': shift != null ? _shiftToJson(shift) : null,
     });
@@ -798,15 +941,19 @@ class LanPosServer {
     ValidatedSession session,
   ) async {
     final settings = await _dbHelper.getAllSettings();
+    final endpoints = await _dbHelper.getServerNetworkEndpoints();
     final shift = await _dbHelper.getCurrentOpenShift(
       cashierId: session.cashier.id,
       terminalId: terminal.terminalId,
     );
     await _sendOk(req, {
+      'server_id': serverId,
       'cashier': _cashierToSafeJson(session.cashier),
       'expires_at': session.session.expiresAt,
       'terminal': terminal.toPublicJson(),
       'drawer_mode': DrawerMode.normalize(settings['drawer_mode']),
+      'network_mode': activeNetworkModeResolver?.call() ?? _inferActiveNetworkMode(_advertisedIps),
+      'endpoints': endpoints.where((e) => e.isActive && e.effectiveUrl.isNotEmpty).map((e) => e.toApiJson()).toList(),
       'current_shift': shift != null ? _shiftToJson(shift) : null,
     });
   }
@@ -816,6 +963,7 @@ class LanPosServer {
     PairedTerminalModel terminal,
   ) async {
     final settings = await _dbHelper.getAllSettings();
+    final endpoints = await _dbHelper.getServerNetworkEndpoints();
     final rawRc = settings['receipt_config_json'] ?? '';
     final rc = rawRc.isNotEmpty
         ? ReceiptConfigModel.fromJson(rawRc)
@@ -824,6 +972,7 @@ class LanPosServer {
             footerText: settings['receipt_footer'] ?? 'Terima kasih!',
           );
     await _sendOk(req, {
+      'server_id': serverId,
       'store_name': settings['store_name'] ?? 'KasirToko',
       'store_address': settings['store_address'] ?? '',
       'store_phone': settings['store_phone'] ?? '',
@@ -832,6 +981,8 @@ class LanPosServer {
       'tax_enabled': (settings['tax_enabled'] ?? '0') == '1',
       'tax_rate': double.tryParse(settings['tax_rate'] ?? '0') ?? 0.0,
       'drawer_mode': DrawerMode.normalize(settings['drawer_mode']),
+      'network_mode': activeNetworkModeResolver?.call() ?? _inferActiveNetworkMode(_advertisedIps),
+      'endpoints': endpoints.where((e) => e.isActive && e.effectiveUrl.isNotEmpty).map((e) => e.toApiJson()).toList(),
       'receipt_config': rc.toMap(),
       'allow_auto_open_drawer': terminal.allowAutoOpenDrawer,
       'allow_manual_open_drawer': terminal.allowManualOpenDrawer,

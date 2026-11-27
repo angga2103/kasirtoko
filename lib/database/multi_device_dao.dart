@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:crypto/crypto.dart';
@@ -61,10 +62,28 @@ class SessionValidationFailure {
   const SessionValidationFailure(this.errorCode, this.message);
 }
 
+class SessionLimitExceededException implements Exception {
+  final int activeCount;
+  final int maxAllowed;
+  final List<Map<String, dynamic>> activeDevices;
+  final String message;
+
+  const SessionLimitExceededException({
+    required this.activeCount,
+    required this.maxAllowed,
+    required this.activeDevices,
+    required this.message,
+  });
+
+  @override
+  String toString() => message;
+}
+
 class MultiDeviceDao {
   final DatabaseHelper _dbHelper;
   final SecretVault Function() _vaultProvider;
   final Uuid _uuid = const Uuid();
+  final Map<int, Future<void>> _cashierSessionLocks = {};
 
   MultiDeviceDao({
     DatabaseHelper? dbHelper,
@@ -567,54 +586,156 @@ class MultiDeviceDao {
 
   // ==================== SESSIONS ====================
 
+  Future<T> _runWithCashierSessionLock<T>(int cashierId, Future<T> Function() fn) async {
+    final prev = _cashierSessionLocks[cashierId] ?? Future<void>.value();
+    final completer = Completer<void>();
+    _cashierSessionLocks[cashierId] = prev.then((_) => completer.future, onError: (_) => completer.future);
+    try {
+      await prev.catchError((_) {});
+      return await fn();
+    } finally {
+      completer.complete();
+      if (_cashierSessionLocks[cashierId] == completer.future) {
+        _cashierSessionLocks.remove(cashierId);
+      }
+    }
+  }
+
   Future<Map<String, dynamic>> issueSession({
     required String terminalId,
     required UserModel cashier,
     int? shiftId,
+    String? deviceName,
     Duration ttl = const Duration(hours: 8),
   }) async {
-    final db = await _dbHelper.database;
-    final rawToken = generateOpaqueSecret(byteLength: 32);
-    final tokenHash = sha256Hex(rawToken);
-    final now = DateTime.now();
-    final expiresAt = now.add(ttl).toIso8601String();
-    final issuedAt = now.toIso8601String();
+    final cashierId = cashier.id;
+    if (cashierId == null) {
+      throw StateError('ID akun kasir tidak valid.');
+    }
 
-    await db.transaction((txn) async {
-      // Revoke prior active session on the same terminal so 1 terminal = 1 clean active session
-      await txn.update(
-        'terminal_sessions',
-        {'revoked_at': issuedAt},
-        where: "terminal_id = ? AND (revoked_at IS NULL OR revoked_at = '')",
-        whereArgs: [terminalId],
-      );
-      await txn.insert('terminal_sessions', {
-        'session_token_hash': tokenHash,
-        'terminal_id': terminalId,
-        'cashier_id': cashier.id!,
-        'shift_id': shiftId,
-        'issued_at': issuedAt,
+    return _runWithCashierSessionLock(cashierId, () async {
+      final db = await _dbHelper.database;
+      final rawToken = generateOpaqueSecret(byteLength: 32);
+      final tokenHash = sha256Hex(rawToken);
+      final now = DateTime.now();
+      final expiresAt = now.add(ttl).toIso8601String();
+      final issuedAt = now.toIso8601String();
+      late int maxAllowed;
+      late int activeAfterIssue;
+
+      await db.transaction((txn) async {
+        maxAllowed = await _dbHelper.resolveEffectiveMaxSessionsTxn(txn, cashier);
+
+        final termRows = await txn.query(
+          'paired_terminals',
+          columns: ['terminal_name'],
+          where: 'terminal_id = ?',
+          whereArgs: [terminalId],
+          limit: 1,
+        );
+        final resolvedDeviceName = (deviceName != null && deviceName.trim().isNotEmpty)
+            ? deviceName.trim()
+            : (termRows.isNotEmpty
+                ? (termRows.first['terminal_name'] ?? terminalId).toString()
+                : terminalId);
+
+        final activeRows = await txn.rawQuery('''
+          SELECT ts.id, ts.terminal_id, ts.device_name, ts.issued_at, ts.expires_at,
+                 COALESCE(NULLIF(TRIM(pt.terminal_name), ''), NULLIF(TRIM(ts.device_name), ''), ts.terminal_id) AS resolved_name
+          FROM terminal_sessions ts
+          LEFT JOIN paired_terminals pt ON pt.terminal_id = ts.terminal_id
+          WHERE ts.cashier_id = ?
+            AND (ts.revoked_at IS NULL OR TRIM(ts.revoked_at) = '')
+            AND ts.expires_at > ?
+          ORDER BY ts.id DESC
+        ''', [cashierId, issuedAt]);
+
+        final otherActive = activeRows
+            .where((r) => (r['terminal_id'] ?? '').toString() != terminalId)
+            .toList();
+
+        if (otherActive.length >= maxAllowed) {
+          final activeList = otherActive
+              .map((r) => {
+                    'terminal_id': (r['terminal_id'] ?? '').toString(),
+                    'device_name': (r['resolved_name'] ?? '').toString(),
+                    'issued_at': (r['issued_at'] ?? '').toString(),
+                  })
+              .toList();
+          final deviceNames = activeList
+              .map((d) => '${d['device_name']} (${d['terminal_id']})')
+              .join(', ');
+
+          await txn.insert('audit_logs', {
+            'timestamp': issuedAt,
+            'user_id': cashierId,
+            'user_name': cashier.name,
+            'user_role': cashier.role,
+            'action_type': 'login_staff_ditolak_batas_sesi',
+            'module': 'Keamanan & Autentikasi',
+            'object_id': '$terminalId:USER-$cashierId',
+            'before_value': 'active=${otherActive.length}/$maxAllowed',
+            'after_value': 'rejected=$terminalId',
+            'details':
+                'Login "${cashier.name}" dari $terminalId ($resolvedDeviceName) ditolak karena batas maksimal $maxAllowed sesi aktif sudah terpakai oleh: $deviceNames.',
+          });
+
+          throw SessionLimitExceededException(
+            activeCount: otherActive.length,
+            maxAllowed: maxAllowed,
+            activeDevices: activeList,
+            message:
+                'Akun "${cashier.name}" sudah aktif pada ${otherActive.length}/$maxAllowed perangkat ($deviceNames). Minta Admin mencabut sesi lama atau naikkan batas sesi terlebih dahulu.',
+          );
+        }
+
+        // Revoke prior active session ONLY on the same terminal so 1 terminal = 1 clean active session
+        await txn.update(
+          'terminal_sessions',
+          {
+            'revoked_at': issuedAt,
+            'revoked_reason': 'Digantikan login baru pada terminal yang sama',
+            'revoked_by': cashier.name,
+          },
+          where: "terminal_id = ? AND (revoked_at IS NULL OR revoked_at = '')",
+          whereArgs: [terminalId],
+        );
+
+        await txn.insert('terminal_sessions', {
+          'session_token_hash': tokenHash,
+          'terminal_id': terminalId,
+          'cashier_id': cashierId,
+          'shift_id': shiftId,
+          'device_name': resolvedDeviceName,
+          'issued_at': issuedAt,
+          'expires_at': expiresAt,
+          'last_seen_at': issuedAt,
+        });
+        activeAfterIssue = otherActive.length + 1;
+
+        await txn.insert('audit_logs', {
+          'timestamp': issuedAt,
+          'user_id': cashierId,
+          'user_name': cashier.name,
+          'user_role': cashier.role,
+          'action_type': 'login_staff_terminal',
+          'module': 'Keamanan & Autentikasi',
+          'object_id': '$terminalId:USER-$cashierId',
+          'before_value': 'active_other=${otherActive.length}',
+          'after_value': 'active=$activeAfterIssue/$maxAllowed expires_at=$expiresAt',
+          'details':
+              'Kasir "${cashier.name}" login PIN pada terminal $terminalId ($resolvedDeviceName) [Sesi $activeAfterIssue/$maxAllowed].',
+        });
+      });
+
+      return {
+        'session_token': rawToken,
         'expires_at': expiresAt,
-      });
-      await txn.insert('audit_logs', {
-        'timestamp': issuedAt,
-        'user_id': cashier.id ?? 0,
-        'user_name': cashier.name,
-        'user_role': cashier.role,
-        'action_type': 'login_staff_terminal',
-        'module': 'Keamanan & Autentikasi',
-        'object_id': '$terminalId:USER-${cashier.id}',
-        'before_value': '',
-        'after_value': 'expires_at=$expiresAt',
-        'details': 'Kasir "${cashier.name}" login PIN pada terminal $terminalId.',
-      });
+        'issued_at': issuedAt,
+        'max_active_sessions': maxAllowed,
+        'active_session_count': activeAfterIssue,
+      };
     });
-
-    return {
-      'session_token': rawToken,
-      'expires_at': expiresAt,
-      'issued_at': issuedAt,
-    };
   }
 
   Future<({ValidatedSession? ok, SessionValidationFailure? failure})> validateSession({
@@ -682,16 +803,193 @@ class MultiDeviceDao {
     return (ok: ValidatedSession(session: session, cashier: cashier), failure: null);
   }
 
-  Future<void> revokeSessionByRawToken(String rawSessionToken) async {
+  Future<void> revokeSessionByRawToken(
+    String rawSessionToken, {
+    String actorName = 'Kasir Staff',
+  }) async {
     final clean = rawSessionToken.trim();
     if (clean.isEmpty) return;
     final db = await _dbHelper.database;
+    final hash = sha256Hex(clean);
+    final nowIso = DateTime.now().toIso8601String();
+    final existing = await db.query(
+      'terminal_sessions',
+      where: "session_token_hash = ? AND (revoked_at IS NULL OR revoked_at = '')",
+      whereArgs: [hash],
+      limit: 1,
+    );
     await db.update(
       'terminal_sessions',
-      {'revoked_at': DateTime.now().toIso8601String()},
+      {
+        'revoked_at': nowIso,
+        'revoked_reason': 'Logout oleh kasir',
+        'revoked_by': actorName,
+      },
       where: "session_token_hash = ? AND (revoked_at IS NULL OR revoked_at = '')",
-      whereArgs: [sha256Hex(clean)],
+      whereArgs: [hash],
     );
+    if (existing.isNotEmpty) {
+      final row = existing.first;
+      await db.insert('audit_logs', {
+        'timestamp': nowIso,
+        'user_id': (row['cashier_id'] as num?)?.toInt() ?? 0,
+        'user_name': actorName,
+        'user_role': AppRoles.cashier,
+        'action_type': 'logout_staff_terminal',
+        'module': 'Keamanan & Autentikasi',
+        'object_id': '${row['terminal_id']}:USER-${row['cashier_id']}',
+        'before_value': 'active',
+        'after_value': 'logged_out',
+        'details': 'Kasir logout dari terminal ${row['terminal_id']}.',
+      });
+    }
+  }
+
+  Future<List<TerminalSessionDetailModel>> listTerminalSessions({
+    bool includeInactive = false,
+    int? cashierId,
+    String? terminalId,
+    int limit = 100,
+  }) async {
+    final db = await _dbHelper.database;
+    final nowIso = DateTime.now().toIso8601String();
+    final whereParts = <String>[];
+    final args = <dynamic>[];
+    if (!includeInactive) {
+      whereParts.add("(ts.revoked_at IS NULL OR TRIM(ts.revoked_at) = '') AND ts.expires_at > ?");
+      args.add(nowIso);
+    }
+    if (cashierId != null) {
+      whereParts.add('ts.cashier_id = ?');
+      args.add(cashierId);
+    }
+    if (terminalId != null && terminalId.trim().isNotEmpty) {
+      whereParts.add('ts.terminal_id = ?');
+      args.add(terminalId.trim());
+    }
+    final whereClause = whereParts.isEmpty ? '' : 'WHERE ${whereParts.join(' AND ')}';
+    final rows = await db.rawQuery('''
+      SELECT ts.*,
+             COALESCE(u.name, 'Kasir #${cashierId ?? ""}') AS cashier_name,
+             COALESCE(u.role, 'cashier') AS cashier_role,
+             COALESCE(NULLIF(TRIM(pt.terminal_name), ''), NULLIF(TRIM(ts.device_name), ''), ts.terminal_id) AS resolved_terminal_name,
+             COALESCE(pt.device_model, '') AS device_model
+      FROM terminal_sessions ts
+      LEFT JOIN users u ON u.id = ts.cashier_id
+      LEFT JOIN paired_terminals pt ON pt.terminal_id = ts.terminal_id
+      $whereClause
+      ORDER BY ts.id DESC
+      LIMIT ?
+    ''', [...args, limit]);
+
+    return rows
+        .map((r) => TerminalSessionDetailModel(
+              session: TerminalSessionModel.fromMap(r),
+              cashierName: (r['cashier_name'] ?? '').toString(),
+              cashierRole: (r['cashier_role'] ?? AppRoles.cashier).toString(),
+              terminalName: (r['resolved_terminal_name'] ?? '').toString(),
+              deviceModel: (r['device_model'] ?? '').toString(),
+            ))
+        .toList();
+  }
+
+  /// Revokes a single device session without affecting shifts held by other devices/cashiers.
+  Future<void> revokeSessionById(
+    int sessionId, {
+    String actorName = 'Admin',
+    String reason = 'Sesi perangkat dicabut oleh Admin',
+  }) async {
+    final db = await _dbHelper.database;
+    final nowIso = DateTime.now().toIso8601String();
+    final rows = await db.query('terminal_sessions', where: 'id = ?', whereArgs: [sessionId], limit: 1);
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    final cashierId = (row['cashier_id'] as num?)?.toInt();
+    final terminalId = (row['terminal_id'] ?? '').toString();
+
+    await db.transaction((txn) async {
+      await txn.update(
+        'terminal_sessions',
+        {
+          'revoked_at': nowIso,
+          'revoked_reason': reason,
+          'revoked_by': actorName,
+        },
+        where: "id = ? AND (revoked_at IS NULL OR revoked_at = '')",
+        whereArgs: [sessionId],
+      );
+      await txn.insert('audit_logs', {
+        'timestamp': nowIso,
+        'user_id': cashierId ?? 0,
+        'user_name': actorName,
+        'user_role': AppRoles.owner,
+        'action_type': 'cabut_sesi_staff',
+        'module': 'Keamanan & Autentikasi',
+        'object_id': '$terminalId:SESSION-$sessionId',
+        'before_value': 'active',
+        'after_value': 'revoked',
+        'details': 'Sesi #$sessionId pada terminal $terminalId (Kasir #$cashierId) dicabut oleh $actorName: $reason',
+      });
+    });
+
+    _dbHelper.onMultiDeviceEvent?.call('session_revoked', {
+      if (cashierId != null) 'cashier_id': cashierId,
+      'terminal_id': terminalId,
+      'session_id': sessionId,
+      'reason': reason,
+    });
+  }
+
+  /// Revokes all active sessions for a specific employee account without closing shared shifts.
+  Future<int> revokeAllSessionsForCashier(
+    int cashierId, {
+    String actorName = 'Admin',
+    String reason = 'Seluruh sesi akun dicabut oleh Admin',
+  }) async {
+    final db = await _dbHelper.database;
+    final nowIso = DateTime.now().toIso8601String();
+    late int count;
+    await db.transaction((txn) async {
+      count = await txn.update(
+        'terminal_sessions',
+        {
+          'revoked_at': nowIso,
+          'revoked_reason': reason,
+          'revoked_by': actorName,
+        },
+        where: "cashier_id = ? AND (revoked_at IS NULL OR revoked_at = '')",
+        whereArgs: [cashierId],
+      );
+      await txn.insert('audit_logs', {
+        'timestamp': nowIso,
+        'user_id': cashierId,
+        'user_name': actorName,
+        'user_role': AppRoles.owner,
+        'action_type': 'cabut_semua_sesi_akun',
+        'module': 'Keamanan & Autentikasi',
+        'object_id': 'USER-$cashierId',
+        'before_value': 'active_count=$count',
+        'after_value': 'revoked_all',
+        'details': 'Mencabut $count sesi aktif untuk akun #$cashierId oleh $actorName ($reason).',
+      });
+    });
+    _dbHelper.onMultiDeviceEvent?.call('session_revoked', {
+      'cashier_id': cashierId,
+      'reason': reason,
+    });
+    return count;
+  }
+
+  Future<void> touchSessionLastSeen(int sessionId) async {
+    try {
+      final db = await _dbHelper.database;
+      await db.update(
+        'terminal_sessions',
+        {'last_seen_at': DateTime.now().toIso8601String()},
+        where: 'id = ?',
+        whereArgs: [sessionId],
+      );
+    } catch (_) {}
   }
 
   // ==================== CATALOG & CUSTOMERS (SAFE PROJECTION - NO COST_PRICE) ====================

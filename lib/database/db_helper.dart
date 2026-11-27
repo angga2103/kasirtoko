@@ -3,11 +3,13 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:uuid/uuid.dart';
 
 import '../models/attendance.dart';
 import '../models/audit_log.dart';
 import '../models/cash_flow.dart';
 import '../models/cash_register.dart';
+import '../models/operational_models.dart';
 import '../models/customer.dart';
 import '../models/customer_credit.dart';
 import '../models/customer_debt.dart';
@@ -81,7 +83,7 @@ class BarcodeConflictResult {
 }
 
 class DatabaseHelper {
-  static const int dbVersion = 6;
+  static const int dbVersion = 7;
   static final DatabaseHelper instance = DatabaseHelper._init();
   static Database? _database;
   static String? _testDbPath;
@@ -680,6 +682,10 @@ class DatabaseHelper {
     if (oldVersion < 6) {
       await _applyV6Upgrade(db);
     }
+
+    if (oldVersion < 7) {
+      await _applyV7Upgrade(db);
+    }
   }
 
   Future<void> _applyV6Upgrade(DatabaseExecutor db) async {
@@ -783,6 +789,209 @@ class DatabaseHelper {
       await db.insert(
         'store_settings',
         {'key': 'catalog_sync_version', 'value': '1'},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+  }
+
+  Future<void> _applyV7Upgrade(DatabaseExecutor db) async {
+    final nowIso = DateTime.now().toIso8601String();
+
+    if (await _tableExists(db, 'users')) {
+      await _addColumnIfMissing(db, 'users', 'max_active_sessions', 'INTEGER');
+    }
+
+    if (await _tableExists(db, 'terminal_sessions')) {
+      await _addColumnIfMissing(db, 'terminal_sessions', 'device_name', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'terminal_sessions', 'revoked_reason', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'terminal_sessions', 'revoked_by', "TEXT NOT NULL DEFAULT ''");
+      await _addColumnIfMissing(db, 'terminal_sessions', 'last_seen_at', "TEXT NOT NULL DEFAULT ''");
+      await db.rawUpdate('''
+        UPDATE terminal_sessions
+        SET device_name = COALESCE(
+          NULLIF(TRIM(device_name), ''),
+          (SELECT pt.terminal_name FROM paired_terminals pt WHERE pt.terminal_id = terminal_sessions.terminal_id),
+          terminal_id
+        ),
+        last_seen_at = CASE WHEN TRIM(last_seen_at) = '' THEN issued_at ELSE last_seen_at END
+      ''');
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_terminal_sessions_cashier_active
+        ON terminal_sessions (cashier_id, revoked_at, expires_at)
+      ''');
+    }
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS session_policies (
+        role TEXT PRIMARY KEY,
+        max_active_sessions INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL DEFAULT 'Sistem'
+      )
+    ''');
+    for (final role in AppRoles.all) {
+      await db.insert(
+        'session_policies',
+        {
+          'role': role,
+          'max_active_sessions': AppRoles.defaultMaxActiveSessions(role),
+          'updated_at': nowIso,
+          'updated_by': 'Sistem v7',
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS server_network_endpoints (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_type TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL,
+        base_url TEXT NOT NULL DEFAULT '',
+        host TEXT NOT NULL DEFAULT '',
+        port INTEGER NOT NULL DEFAULT 8443,
+        expected_ssid TEXT NOT NULL DEFAULT '',
+        priority INTEGER NOT NULL DEFAULT 1,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        notes TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    await db.insert(
+      'server_network_endpoints',
+      {
+        'profile_type': 'primary_router',
+        'label': 'Router Wi-Fi Toko (Utama)',
+        'base_url': '',
+        'host': '',
+        'port': 8443,
+        'expected_ssid': '',
+        'priority': 1,
+        'is_active': 1,
+        'notes': 'Jaringan Wi-Fi router toko utama',
+        'updated_at': nowIso,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    await db.insert(
+      'server_network_endpoints',
+      {
+        'profile_type': 'backup_hotspot',
+        'label': 'Hotspot HP Admin (Cadangan)',
+        'base_url': 'https://192.168.43.1:8443',
+        'host': '192.168.43.1',
+        'port': 8443,
+        'expected_ssid': '',
+        'priority': 2,
+        'is_active': 1,
+        'notes': 'Failover hotspot HP Admin saat router toko mati',
+        'updated_at': nowIso,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS backup_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_type TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL DEFAULT '',
+        schedule_mode TEXT NOT NULL DEFAULT 'hourly',
+        interval_minutes INTEGER NOT NULL DEFAULT 60,
+        nightly_hour INTEGER NOT NULL DEFAULT 23,
+        nightly_minute INTEGER NOT NULL DEFAULT 30,
+        target_location_type TEXT NOT NULL DEFAULT 'local_separate',
+        target_uri TEXT NOT NULL DEFAULT '',
+        secondary_uri TEXT NOT NULL DEFAULT '',
+        retention_count INTEGER NOT NULL DEFAULT 24,
+        is_enabled INTEGER NOT NULL DEFAULT 1,
+        last_run_at TEXT,
+        last_status TEXT NOT NULL DEFAULT 'idle',
+        last_error TEXT NOT NULL DEFAULT '',
+        next_run_at TEXT,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    await db.insert(
+      'backup_jobs',
+      {
+        'job_type': 'hourly_snapshot',
+        'label': 'Backup Periodik Tiap 1 Jam',
+        'schedule_mode': 'hourly',
+        'interval_minutes': 60,
+        'nightly_hour': 23,
+        'nightly_minute': 30,
+        'target_location_type': 'local_separate',
+        'retention_count': 24,
+        'is_enabled': 1,
+        'last_status': 'idle',
+        'updated_at': nowIso,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    await db.insert(
+      'backup_jobs',
+      {
+        'job_type': 'nightly_full',
+        'label': 'Backup Penuh Harian (Malam)',
+        'schedule_mode': 'nightly',
+        'interval_minutes': 1440,
+        'nightly_hour': 23,
+        'nightly_minute': 30,
+        'target_location_type': 'local_separate',
+        'retention_count': 14,
+        'is_enabled': 1,
+        'last_status': 'idle',
+        'updated_at': nowIso,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS backup_artifacts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id INTEGER,
+        artifact_uuid TEXT NOT NULL UNIQUE,
+        backup_type TEXT NOT NULL DEFAULT 'manual',
+        file_name TEXT NOT NULL,
+        primary_path TEXT NOT NULL,
+        secondary_path TEXT NOT NULL DEFAULT '',
+        location_type TEXT NOT NULL DEFAULT 'local_separate',
+        plain_size_bytes INTEGER NOT NULL DEFAULT 0,
+        encrypted_size_bytes INTEGER NOT NULL DEFAULT 0,
+        plain_sha256 TEXT NOT NULL DEFAULT '',
+        encrypted_sha256 TEXT NOT NULL DEFAULT '',
+        encryption_version TEXT NOT NULL DEFAULT 'aes256gcm_v1',
+        status TEXT NOT NULL DEFAULT 'created',
+        verified_restore_ok INTEGER NOT NULL DEFAULT 0,
+        verification_summary TEXT NOT NULL DEFAULT '',
+        error_message TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (job_id) REFERENCES backup_jobs (id) ON DELETE SET NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_backup_artifacts_created
+      ON backup_artifacts (created_at DESC)
+    ''');
+
+    if (await _tableExists(db, 'store_settings')) {
+      final srvRows = await db.query(
+        'store_settings',
+        where: 'key = ?',
+        whereArgs: ['server_id'],
+        limit: 1,
+      );
+      final existingSrvId = srvRows.isNotEmpty ? (srvRows.first['value'] ?? '').toString().trim() : '';
+      if (existingSrvId.isEmpty) {
+        await db.insert(
+          'store_settings',
+          {'key': 'server_id', 'value': 'SRV-${const Uuid().v4()}'},
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+      await db.insert(
+        'store_settings',
+        {'key': 'discoverable_port', 'value': '8443'},
         conflictAlgorithm: ConflictAlgorithm.ignore,
       );
     }
@@ -1661,6 +1870,7 @@ class DatabaseHelper {
     await _createV5NewTables(db);
     await _ensureV5Indexes(db);
     await _applyV6Upgrade(db);
+    await _applyV7Upgrade(db);
     await _seedInitialData(db);
   }
 
@@ -2328,22 +2538,29 @@ class DatabaseHelper {
       whereArgs: [user.id],
     );
     if (user.id != null) {
+      final nowIso = DateTime.now().toIso8601String();
+      final reason = user.isActive ? 'Hak akses / akun diperbarui' : 'Akun dinonaktifkan';
       // Force re-login on connected terminals when permissions, role, or PIN/status change.
+      // NEVER close shared open shifts belonging to other cashiers!
       await db.update(
         'terminal_sessions',
-        {'revoked_at': DateTime.now().toIso8601String()},
+        {
+          'revoked_at': nowIso,
+          'revoked_reason': reason,
+          'revoked_by': 'Admin',
+        },
         where: 'cashier_id = ? AND (revoked_at IS NULL OR revoked_at = \'\')',
         whereArgs: [user.id],
       );
       onMultiDeviceEvent?.call('session_revoked', {
         'cashier_id': user.id,
-        'reason': user.isActive ? 'Hak akses / akun diperbarui' : 'Akun dinonaktifkan',
+        'reason': reason,
       });
     }
     return rows;
   }
 
-  Future<void> setUserActive(int userId, bool isActive) async {
+  Future<void> setUserActive(int userId, bool isActive, {String actorName = 'Admin'}) async {
     final db = await database;
     await db.update(
       'users',
@@ -2352,15 +2569,21 @@ class DatabaseHelper {
       whereArgs: [userId],
     );
     if (!isActive) {
+      final nowIso = DateTime.now().toIso8601String();
+      const reason = 'Akun dinonaktifkan oleh Admin';
       await db.update(
         'terminal_sessions',
-        {'revoked_at': DateTime.now().toIso8601String()},
+        {
+          'revoked_at': nowIso,
+          'revoked_reason': reason,
+          'revoked_by': actorName,
+        },
         where: 'cashier_id = ? AND (revoked_at IS NULL OR revoked_at = \'\')',
         whereArgs: [userId],
       );
       onMultiDeviceEvent?.call('session_revoked', {
         'cashier_id': userId,
-        'reason': 'Akun dinonaktifkan oleh Admin',
+        'reason': reason,
       });
     }
   }
@@ -7375,5 +7598,261 @@ class DatabaseHelper {
     final db = await database;
     final res = await db.query('store_settings');
     return {for (final item in res) item['key'] as String: item['value'] as String};
+  }
+
+  // ================= SERVER ID, SESSION POLICIES, ENDPOINTS & BACKUP DATA =================
+
+  Future<String> getOrCreateServerIdTxn(DatabaseExecutor db) async {
+    final rows = await db.query(
+      'store_settings',
+      where: 'key = ?',
+      whereArgs: ['server_id'],
+      limit: 1,
+    );
+    final existing = rows.isNotEmpty ? (rows.first['value'] ?? '').toString().trim() : '';
+    if (existing.isNotEmpty) return existing;
+    final created = 'SRV-${const Uuid().v4()}';
+    await db.insert(
+      'store_settings',
+      {'key': 'server_id', 'value': created},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    return created;
+  }
+
+  Future<String> getOrCreateServerId() async {
+    final db = await database;
+    return getOrCreateServerIdTxn(db);
+  }
+
+  Future<List<SessionPolicyModel>> getSessionPolicies() async {
+    final db = await database;
+    final rows = await db.query('session_policies', orderBy: 'role ASC');
+    if (rows.isEmpty) {
+      final nowIso = DateTime.now().toIso8601String();
+      return AppRoles.all
+          .map((r) => SessionPolicyModel(
+                role: r,
+                maxActiveSessions: AppRoles.defaultMaxActiveSessions(r),
+                updatedAt: nowIso,
+              ))
+          .toList();
+    }
+    return rows.map((r) => SessionPolicyModel.fromMap(r)).toList();
+  }
+
+  Future<void> upsertSessionPolicy(
+    String role,
+    int maxActiveSessions, {
+    String actorName = 'Admin',
+  }) async {
+    final bounded = maxActiveSessions.clamp(1, 20);
+    final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
+    final prevRows = await db.query('session_policies', where: 'role = ?', whereArgs: [role], limit: 1);
+    final prevVal = prevRows.isNotEmpty ? (prevRows.first['max_active_sessions'] as num?)?.toInt() : null;
+    await db.insert(
+      'session_policies',
+      {
+        'role': role,
+        'max_active_sessions': bounded,
+        'updated_at': nowIso,
+        'updated_by': actorName,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    await db.insert('audit_logs', {
+      'timestamp': nowIso,
+      'user_id': 0,
+      'user_name': actorName,
+      'user_role': AppRoles.owner,
+      'action_type': 'ubah_kebijakan_sesi',
+      'module': 'Keamanan & Autentikasi',
+      'object_id': 'POLICY-$role',
+      'before_value': 'max=${prevVal ?? AppRoles.defaultMaxActiveSessions(role)}',
+      'after_value': 'max=$bounded',
+      'details': 'Batas sesi role ${AppRoles.displayName(role)} diubah menjadi $bounded perangkat.',
+    });
+  }
+
+  Future<int> resolveEffectiveMaxSessionsTxn(
+    DatabaseExecutor db,
+    UserModel user,
+  ) async {
+    if (user.maxActiveSessions != null && user.maxActiveSessions! > 0) {
+      return user.maxActiveSessions!;
+    }
+    final rows = await db.query(
+      'session_policies',
+      where: 'role = ?',
+      whereArgs: [user.role],
+      limit: 1,
+    );
+    if (rows.isNotEmpty) {
+      final policyMax = (rows.first['max_active_sessions'] as num?)?.toInt();
+      if (policyMax != null && policyMax > 0) return policyMax;
+    }
+    return AppRoles.defaultMaxActiveSessions(user.role);
+  }
+
+  Future<List<ServerNetworkEndpointModel>> getServerNetworkEndpoints() async {
+    final db = await database;
+    final rows = await db.query('server_network_endpoints', orderBy: 'priority ASC, id ASC');
+    return rows.map((r) => ServerNetworkEndpointModel.fromMap(r)).toList();
+  }
+
+  Future<void> upsertServerNetworkEndpoint(
+    ServerNetworkEndpointModel endpoint, {
+    String actorName = 'Admin',
+  }) async {
+    final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
+    final cleanHost = endpoint.host.trim();
+    final port = endpoint.port > 0 ? endpoint.port : 8443;
+    final effectiveUrl = endpoint.baseUrl.trim().isNotEmpty
+        ? endpoint.baseUrl.trim().replaceAll(RegExp(r'/+$'), '')
+        : (cleanHost.isNotEmpty ? 'https://$cleanHost:$port' : '');
+    await db.insert(
+      'server_network_endpoints',
+      {
+        'profile_type': endpoint.profileType,
+        'label': endpoint.label,
+        'base_url': effectiveUrl,
+        'host': cleanHost,
+        'port': port,
+        'expected_ssid': endpoint.expectedSsid.trim(),
+        'priority': endpoint.priority,
+        'is_active': endpoint.isActive ? 1 : 0,
+        'notes': endpoint.notes.trim(),
+        'updated_at': nowIso,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    final ver = await bumpSyncVersionTxn(db);
+    await db.insert('audit_logs', {
+      'timestamp': nowIso,
+      'user_id': 0,
+      'user_name': actorName,
+      'user_role': AppRoles.owner,
+      'action_type': 'failover_jaringan',
+      'module': 'Jaringan Multi-Device',
+      'object_id': endpoint.profileType,
+      'before_value': '',
+      'after_value': '$effectiveUrl (ssid=${endpoint.expectedSsid})',
+      'details': 'Konfigurasi endpoint ${endpoint.label} diperbarui: $effectiveUrl.',
+    });
+    onMultiDeviceEvent?.call('settings_changed', {
+      'sync_version': ver,
+      'key': 'server_network_endpoints',
+    });
+  }
+
+  Future<List<BackupJobModel>> getBackupJobs() async {
+    final db = await database;
+    final rows = await db.query('backup_jobs', orderBy: 'id ASC');
+    return rows.map((r) => BackupJobModel.fromMap(r)).toList();
+  }
+
+  Future<void> updateBackupJobConfig(
+    String jobType, {
+    bool? isEnabled,
+    int? intervalMinutes,
+    int? nightlyHour,
+    int? nightlyMinute,
+    String? targetLocationType,
+    String? targetUri,
+    String? secondaryUri,
+    int? retentionCount,
+  }) async {
+    final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
+    final updates = <String, dynamic>{'updated_at': nowIso};
+    if (isEnabled != null) updates['is_enabled'] = isEnabled ? 1 : 0;
+    if (intervalMinutes != null) updates['interval_minutes'] = intervalMinutes.clamp(5, 10080);
+    if (nightlyHour != null) updates['nightly_hour'] = nightlyHour.clamp(0, 23);
+    if (nightlyMinute != null) updates['nightly_minute'] = nightlyMinute.clamp(0, 59);
+    if (targetLocationType != null) updates['target_location_type'] = targetLocationType;
+    if (targetUri != null) updates['target_uri'] = targetUri;
+    if (secondaryUri != null) updates['secondary_uri'] = secondaryUri;
+    if (retentionCount != null) updates['retention_count'] = retentionCount.clamp(2, 180);
+    await db.update('backup_jobs', updates, where: 'job_type = ?', whereArgs: [jobType]);
+  }
+
+  Future<void> recordBackupJobRun(
+    String jobType, {
+    required String status,
+    String errorMessage = '',
+    String? nextRunAt,
+  }) async {
+    final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
+    await db.update(
+      'backup_jobs',
+      {
+        'last_run_at': nowIso,
+        'last_status': status,
+        'last_error': errorMessage,
+        if (nextRunAt != null) 'next_run_at': nextRunAt,
+        'updated_at': nowIso,
+      },
+      where: 'job_type = ?',
+      whereArgs: [jobType],
+    );
+  }
+
+  Future<int> insertBackupArtifact(BackupArtifactModel artifact) async {
+    final db = await database;
+    return await db.insert('backup_artifacts', {
+      'job_id': artifact.jobId,
+      'artifact_uuid': artifact.artifactUuid,
+      'backup_type': artifact.backupType,
+      'file_name': artifact.fileName,
+      'primary_path': artifact.primaryPath,
+      'secondary_path': artifact.secondaryPath,
+      'location_type': artifact.locationType,
+      'plain_size_bytes': artifact.plainSizeBytes,
+      'encrypted_size_bytes': artifact.encryptedSizeBytes,
+      'plain_sha256': artifact.plainSha256,
+      'encrypted_sha256': artifact.encryptedSha256,
+      'encryption_version': artifact.encryptionVersion,
+      'status': artifact.status,
+      'verified_restore_ok': artifact.verifiedRestoreOk ? 1 : 0,
+      'verification_summary': artifact.verificationSummary,
+      'error_message': artifact.errorMessage,
+      'created_at': artifact.createdAt,
+    });
+  }
+
+  Future<void> updateBackupArtifactVerification({
+    required String artifactUuid,
+    required String status,
+    required bool verifiedRestoreOk,
+    required String verificationSummary,
+    String errorMessage = '',
+    String? secondaryPath,
+  }) async {
+    final db = await database;
+    await db.update(
+      'backup_artifacts',
+      {
+        'status': status,
+        'verified_restore_ok': verifiedRestoreOk ? 1 : 0,
+        'verification_summary': verificationSummary,
+        'error_message': errorMessage,
+        if (secondaryPath != null) 'secondary_path': secondaryPath,
+      },
+      where: 'artifact_uuid = ?',
+      whereArgs: [artifactUuid],
+    );
+  }
+
+  Future<List<BackupArtifactModel>> listBackupArtifacts({int limit = 50}) async {
+    final db = await database;
+    final rows = await db.query(
+      'backup_artifacts',
+      orderBy: 'id DESC',
+      limit: limit,
+    );
+    return rows.map((r) => BackupArtifactModel.fromMap(r)).toList();
   }
 }

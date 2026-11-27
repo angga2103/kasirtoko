@@ -247,6 +247,20 @@ class SecurityHelper {
     return base64UrlEncode(digest);
   }
 
+  /// Tested RFC 8018 PBKDF2-HMAC-SHA256 derivation via PointyCastle (native API26+ on Android).
+  static Future<Uint8List> deriveKeyBytes({
+    required String passphraseAscii,
+    required Uint8List saltBytes,
+    required int iterations,
+    int keyLength = defaultKeyLength,
+  }) =>
+      _derivePbkdf2(
+        inputAscii: passphraseAscii,
+        saltBytes: saltBytes,
+        iterations: iterations,
+        keyLength: keyLength,
+      );
+
   /// Tested RFC 8018 PBKDF2-HMAC-SHA256 derivation via PointyCastle.
   static Uint8List derivePbkdf2PointyCastle({
     required Uint8List inputBytes,

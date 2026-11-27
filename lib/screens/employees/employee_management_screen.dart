@@ -29,6 +29,102 @@ class _EmployeeManagementScreenState extends State<EmployeeManagementScreen> {
     );
   }
 
+  Future<void> _showSessionPoliciesDialog(AuthProvider auth) async {
+    final values = <String, int>{
+      for (final r in AppRoles.all)
+        r: auth.sessionPolicies.where((p) => p.role == r).firstOrNull?.maxActiveSessions ??
+            AppRoles.defaultMaxActiveSessions(r),
+    };
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+          title: const Text('Kebijakan Batas Sesi per Role'),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Mengatur jumlah maksimum HP Staff aktif per akun secara bersamaan. Akun tetap dapat memiliki override khusus di form karyawan.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                  ),
+                  const SizedBox(height: 12),
+                  ...AppRoles.all.map((role) {
+                    final lockedOwner = role == AppRoles.owner && !auth.isOwner;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              AppRoles.displayName(role),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          SizedBox(
+                            width: 96,
+                            child: DropdownButtonFormField<int>(
+                              value: values[role] ?? 1,
+                              isExpanded: true,
+                              isDense: true,
+                              decoration: const InputDecoration(
+                                border: OutlineInputBorder(),
+                                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              ),
+                              items: [1, 2, 3, 4, 5]
+                                  .map((n) => DropdownMenuItem<int>(
+                                        value: n,
+                                        child: Text('$n HP', maxLines: 1, overflow: TextOverflow.ellipsis),
+                                      ))
+                                  .toList(),
+                              onChanged: lockedOwner
+                                  ? null
+                                  : (v) {
+                                      if (v != null) setDlgState(() => values[role] = v);
+                                    },
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Batal'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Simpan Kebijakan'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (saved != true || !mounted) return;
+    for (final role in AppRoles.all) {
+      if (role == AppRoles.owner && !auth.isOwner) continue;
+      await auth.updateRoleSessionPolicy(role, values[role] ?? 1);
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Kebijakan batas sesi per role berhasil diperbarui.')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = Provider.of<AuthProvider>(context);
@@ -52,6 +148,13 @@ class _EmployeeManagementScreenState extends State<EmployeeManagementScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Manajemen Karyawan & Hak Akses'),
+        actions: [
+          IconButton(
+            tooltip: 'Kebijakan Batas Sesi',
+            icon: const Icon(Icons.devices_fold_rounded),
+            onPressed: () => _showSessionPoliciesDialog(auth),
+          ),
+        ],
       ),
       body: users.isEmpty
           ? const Center(child: Text('Belum ada data karyawan.'))
@@ -119,7 +222,7 @@ class _EmployeeManagementScreenState extends State<EmployeeManagementScreen> {
                     subtitle: Padding(
                       padding: const EdgeInsets.only(top: 4),
                       child: Text(
-                        'User: @${u.username.isEmpty ? "-" : u.username} • Telp: ${u.phone.isEmpty ? "-" : u.phone}\nHak akses aktif: ${u.isOwner ? "Penuh (Owner)" : "$activePermCount / ${AppPermissions.labels.length}"}',
+                        'User: @${u.username.isEmpty ? "-" : u.username} • Telp: ${u.phone.isEmpty ? "-" : u.phone}\nHak akses: ${u.isOwner ? "Penuh (Owner)" : "$activePermCount / ${AppPermissions.labels.length}"} • Maks Sesi: ${auth.effectiveMaxSessionsFor(u)} HP${u.maxActiveSessions != null ? " (Khusus)" : ""}',
                         style: const TextStyle(fontSize: 11.5, color: AppTheme.textMuted),
                       ),
                     ),
@@ -127,6 +230,15 @@ class _EmployeeManagementScreenState extends State<EmployeeManagementScreen> {
                       onSelected: (val) async {
                         if (val == 'edit') {
                           _openEmployeeForm(employee: u);
+                        } else if (val == 'revoke_sessions') {
+                          final msg = await auth.revokeAllSessionsForEmployee(u);
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(msg ?? 'Semua sesi aktif milik ${u.name} telah dicabut.'),
+                              backgroundColor: msg == null ? AppTheme.success : Colors.orange.shade800,
+                            ),
+                          );
                         } else if (val == 'toggle') {
                           final err = await auth.toggleEmployeeActive(u, !u.isActive);
                           if (err != null && context.mounted) {
@@ -138,6 +250,10 @@ class _EmployeeManagementScreenState extends State<EmployeeManagementScreen> {
                       },
                       itemBuilder: (_) => [
                         const PopupMenuItem(value: 'edit', child: Text('Edit Profil & Hak Akses')),
+                        const PopupMenuItem(
+                          value: 'revoke_sessions',
+                          child: Text('Cabut Semua Sesi Aktif'),
+                        ),
                         if (!u.isOwner)
                           PopupMenuItem(
                             value: 'toggle',
@@ -177,6 +293,7 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
   late TextEditingController _phoneCtrl;
   final TextEditingController _passwordCtrl = TextEditingController();
   final TextEditingController _pinCtrl = TextEditingController();
+  late TextEditingController _maxSessionsCtrl;
 
   late String _role;
   late Map<String, bool> _permissions;
@@ -191,6 +308,7 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
     _nameCtrl = TextEditingController(text: e?.name ?? '');
     _usernameCtrl = TextEditingController(text: e?.username ?? '');
     _phoneCtrl = TextEditingController(text: e?.phone ?? '');
+    _maxSessionsCtrl = TextEditingController(text: e?.maxActiveSessions?.toString() ?? '');
     _role = e?.role ?? AppRoles.cashier;
     _permissions = e != null
         ? Map<String, bool>.from(e.permissions)
@@ -206,6 +324,7 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
     _phoneCtrl.dispose();
     _passwordCtrl.dispose();
     _pinCtrl.dispose();
+    _maxSessionsCtrl.dispose();
     super.dispose();
   }
 
@@ -225,6 +344,7 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
     setState(() => _saving = true);
 
     final auth = Provider.of<AuthProvider>(context, listen: false);
+    final parsedMaxSessions = int.tryParse(_maxSessionsCtrl.text.trim());
     final err = await auth.saveEmployee(
       existingId: widget.employee?.id,
       name: _nameCtrl.text,
@@ -236,6 +356,7 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
       photoPath: _photoPath,
       permissions: _permissions,
       isActive: _isActive,
+      maxActiveSessions: parsedMaxSessions != null && parsedMaxSessions > 0 ? parsedMaxSessions : null,
     );
 
     if (!mounted) return;
@@ -396,6 +517,26 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
                                     });
                                   }
                                 },
+                        ),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _maxSessionsCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(
+                            labelText: 'Batas Maks. Sesi HP Aktif (Opsional)',
+                            hintText: 'Default role: ${AppRoles.defaultMaxActiveSessions(_role)} HP',
+                            helperText:
+                                'Kosongkan untuk mengikuti kebijakan role (${AppRoles.defaultMaxActiveSessions(_role)} HP)',
+                          ),
+                          validator: (v) {
+                            final raw = (v ?? '').trim();
+                            if (raw.isEmpty) return null;
+                            final parsed = int.tryParse(raw);
+                            if (parsed == null || parsed < 1 || parsed > 20) {
+                              return 'Masukkan angka antara 1 sampai 20';
+                            }
+                            return null;
+                          },
                         ),
                         if (isEdit && !isOwnerTarget)
                           SwitchListTile(

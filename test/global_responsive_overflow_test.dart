@@ -10,15 +10,18 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:kasirtoko/database/db_helper.dart';
 import 'package:kasirtoko/models/cash_register.dart';
 import 'package:kasirtoko/models/customer.dart';
+import 'package:kasirtoko/models/operational_models.dart';
 import 'package:kasirtoko/models/paired_terminal.dart';
 import 'package:kasirtoko/models/print_job.dart';
 import 'package:kasirtoko/models/printer_device.dart';
 import 'package:kasirtoko/models/product.dart';
 import 'package:kasirtoko/models/promo.dart';
+import 'package:kasirtoko/models/terminal_session.dart';
 import 'package:kasirtoko/models/transaction.dart';
 import 'package:kasirtoko/models/transaction_item.dart';
 import 'package:kasirtoko/providers/attendance_provider.dart';
 import 'package:kasirtoko/providers/auth_provider.dart';
+import 'package:kasirtoko/providers/backup_provider.dart';
 import 'package:kasirtoko/providers/cash_flow_provider.dart';
 import 'package:kasirtoko/providers/customer_provider.dart';
 import 'package:kasirtoko/providers/debt_provider.dart';
@@ -48,6 +51,7 @@ import 'package:kasirtoko/screens/purchases/purchase_list_screen.dart';
 import 'package:kasirtoko/screens/reports/daily_report_screen.dart';
 import 'package:kasirtoko/screens/returns/return_screen.dart';
 import 'package:kasirtoko/screens/service/service_form_screen.dart';
+import 'package:kasirtoko/screens/settings/backup_management_screen.dart';
 import 'package:kasirtoko/screens/settings/multi_device_server_screen.dart';
 import 'package:kasirtoko/screens/settings/printer_management_screen.dart';
 import 'package:kasirtoko/screens/settings/receipt_settings_screen.dart';
@@ -96,6 +100,8 @@ const List<_Vp> _stressViewports = [
 class _FakeServerProvider extends PosServerProvider {
   bool _running = true;
   late List<PairedTerminalModel> _terminals;
+  late List<TerminalSessionDetailModel> _sessions;
+  late List<ServerNetworkEndpointModel> _endpoints;
   final List<PrintJobModel> _jobs = const [
     PrintJobModel(
       id: 1,
@@ -139,6 +145,50 @@ class _FakeServerProvider extends PosServerProvider {
         pairedAt: '2026-11-27T09:00:00',
       ),
     ];
+    _sessions = [
+      TerminalSessionDetailModel(
+        session: TerminalSessionModel(
+          id: 101,
+          sessionTokenHash: 'hash-1',
+          terminalId: 'TERM-COUNTER-UTAMA-01',
+          cashierId: 2,
+          deviceName: 'Xiaomi Redmi Note 13',
+          issuedAt: '2026-11-28T08:00:00',
+          expiresAt: DateTime.now().add(const Duration(hours: 8)).toIso8601String(),
+          lastSeenAt: '2026-11-28T09:15:00',
+        ),
+        cashierName: 'Kasir Pagi Counter Utama',
+        cashierRole: 'cashier',
+        terminalName: 'Terminal Kasir Counter Utama Mall Selatan Lantai Dasar',
+        deviceModel: 'Xiaomi Redmi Note 13',
+      ),
+    ];
+    _endpoints = const [
+      ServerNetworkEndpointModel(
+        id: 1,
+        profileType: 'primary_router',
+        label: 'Router Toko Utama',
+        baseUrl: 'https://192.168.1.50:8443',
+        host: '192.168.1.50',
+        port: 8443,
+        expectedSsid: 'TOKO_WIFI_UTAMA',
+        priority: 1,
+        isActive: true,
+        updatedAt: '2026-11-28T08:00:00',
+      ),
+      ServerNetworkEndpointModel(
+        id: 2,
+        profileType: 'backup_hotspot',
+        label: 'Hotspot HP Admin (Cadangan)',
+        baseUrl: 'https://192.168.43.1:8443',
+        host: '192.168.43.1',
+        port: 8443,
+        expectedSsid: 'KASIRTOKO_HOTSPOT_BACKUP',
+        priority: 2,
+        isActive: true,
+        updatedAt: '2026-11-28T08:00:00',
+      ),
+    ];
   }
 
   @override
@@ -151,10 +201,29 @@ class _FakeServerProvider extends PosServerProvider {
   int get port => 8443;
 
   @override
-  List<String> get localIps => const ['192.168.43.100', '10.0.2.15'];
+  String get serverId => 'srv-test-001';
+
+  @override
+  AdminNetworkState get networkState =>
+      _running ? AdminNetworkState.routerOnline : AdminNetworkState.serverUnavailable;
+
+  @override
+  List<String> get localIps => const ['192.168.1.50', '192.168.43.1'];
 
   @override
   List<PairedTerminalModel> get terminals => _terminals;
+
+  @override
+  List<TerminalSessionDetailModel> get activeSessions => _sessions;
+
+  @override
+  List<ServerNetworkEndpointModel> get networkEndpoints => _endpoints;
+
+  @override
+  ServerNetworkEndpointModel? get primaryRouterEndpoint => _endpoints.first;
+
+  @override
+  ServerNetworkEndpointModel? get backupHotspotEndpoint => _endpoints.last;
 
   @override
   List<PrintJobModel> get printJobs => _jobs;
@@ -236,10 +305,64 @@ class _FakeServerProvider extends PosServerProvider {
     }).toList();
     notifyListeners();
   }
+
+  @override
+  Future<void> revokeSession(
+    int sessionId, {
+    String actorName = 'Admin',
+    String reason = 'Sesi perangkat dicabut oleh Admin',
+  }) async {
+    _sessions = _sessions.where((s) => s.session.id != sessionId).toList();
+    notifyListeners();
+  }
+
+  @override
+  Future<int> revokeAllCashierSessions(
+    int cashierId, {
+    String actorName = 'Admin',
+    String reason = 'Seluruh sesi akun dicabut oleh Admin',
+  }) async {
+    final before = _sessions.length;
+    _sessions = _sessions.where((s) => s.session.cashierId != cashierId).toList();
+    notifyListeners();
+    return before - _sessions.length;
+  }
+
+  @override
+  Future<void> saveNetworkEndpoint({
+    required String profileType,
+    required String label,
+    required String host,
+    int port = 8443,
+    String expectedSsid = '',
+    int priority = 1,
+    bool isActive = true,
+    String notes = '',
+    String actorName = 'Admin',
+  }) async {
+    _endpoints = _endpoints.map((e) {
+      if (e.profileType != profileType) return e;
+      return ServerNetworkEndpointModel(
+        id: e.id,
+        profileType: profileType,
+        label: label,
+        baseUrl: host.isNotEmpty ? 'https://$host:$port' : '',
+        host: host,
+        port: port,
+        expectedSsid: expectedSsid,
+        priority: priority,
+        isActive: isActive,
+        notes: notes,
+        updatedAt: DateTime.now().toIso8601String(),
+      );
+    }).toList();
+    notifyListeners();
+  }
 }
 
 class _AdminTestHarness {
   final AuthProvider auth = AuthProvider();
+  final BackupProvider backup = BackupProvider();
   final ProductProvider product = ProductProvider();
   final PosProvider pos = PosProvider();
   final CashFlowProvider cashFlow = CashFlowProvider();
@@ -363,6 +486,7 @@ class _AdminTestHarness {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<AuthProvider>.value(value: auth),
+        ChangeNotifierProvider<BackupProvider>.value(value: backup),
         ChangeNotifierProvider<ProductProvider>.value(value: product),
         ChangeNotifierProvider<PosProvider>.value(value: pos),
         ChangeNotifierProvider<CashFlowProvider>.value(value: cashFlow),
@@ -380,6 +504,7 @@ class _AdminTestHarness {
   }
 
   Future<void> disposeAll() async {
+    backup.dispose();
     await DatabaseHelper.instance.closeTestDatabase();
   }
 }
@@ -455,8 +580,8 @@ Future<void> _scrollToFirst(
   WidgetTester tester,
   Finder target, {
   int index = 0,
-  Offset step = const Offset(0, -200),
-  int maxDrags = 15,
+  Offset step = const Offset(0, -240),
+  int maxDrags = 35,
 }) async {
   final scrollables = find.byType(Scrollable);
   for (var i = 0; i < maxDrags; i++) {
@@ -595,7 +720,7 @@ void main() {
       expect(harness.server.terminals.first.defaultPrinterId, harness.secondPrinterId);
 
       // Open Pairing Terminal Baru AlertDialog and open Laci Kas dropdown
-      await _scrollToFirst(tester, find.text('Pairing Terminal Baru'), step: const Offset(0, 260), maxDrags: 25);
+      await _scrollToFirst(tester, find.text('Pairing Terminal Baru'), step: const Offset(0, 260), maxDrags: 40);
       await tester.tap(find.text('Pairing Terminal Baru').first);
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
@@ -751,6 +876,7 @@ void main() {
         await _pumpAndVerifyZeroOverflow(tester, harness: harness, screen: PromoScreen(key: ValueKey('promo_${vp.label}')), vp: vp);
         await _pumpAndVerifyZeroOverflow(tester, harness: harness, screen: ServiceFormScreen(key: ValueKey('sf_${vp.label}')), vp: vp);
         await _pumpAndVerifyZeroOverflow(tester, harness: harness, screen: AttendanceHistoryScreen(key: ValueKey('att_${vp.label}')), vp: vp);
+        await _pumpAndVerifyZeroOverflow(tester, harness: harness, screen: BackupManagementScreen(key: ValueKey('bak_${vp.label}')), vp: vp);
       }
 
       // Open DailyReport Pilih Bulan AlertDialog (uses LayoutBuilder inside AlertDialog) at 320x640 s15

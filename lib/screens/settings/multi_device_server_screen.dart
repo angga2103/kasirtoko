@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../../models/operational_models.dart';
 import '../../models/paired_terminal.dart';
 import '../../models/print_job.dart';
 import '../../models/user.dart';
@@ -12,6 +13,7 @@ import '../../providers/server_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../services/server_lifecycle_bridge.dart';
 import '../../utils/app_theme.dart';
+import 'backup_management_screen.dart';
 
 class MultiDeviceServerScreen extends StatefulWidget {
   const MultiDeviceServerScreen({super.key});
@@ -181,6 +183,10 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
               _buildActivePairingCard(srvProv, srvProv.activePairing!),
             ],
             const SizedBox(height: 14),
+            _buildNetworkFailoverCard(srvProv, auth),
+            const SizedBox(height: 14),
+            _buildActiveSessionsSection(srvProv, auth),
+            const SizedBox(height: 14),
             _buildTerminalsSection(srvProv, setProv, prnProv, auth),
             const SizedBox(height: 14),
             _buildPrintJobsSection(srvProv),
@@ -290,6 +296,28 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
                 style: const TextStyle(color: AppTheme.accentRed, fontSize: 12)),
           ],
           const Divider(height: 22),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              _networkStateChip(srvProv.networkState),
+              if (srvProv.serverId.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: Text(
+                    'Server ID: ${srvProv.serverId}',
+                    style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
           Text(
             'Alamat IP Lokal Admin: ${srvProv.localIps.join(", ")}',
             style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5),
@@ -367,6 +395,16 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
                   icon: const Icon(Icons.autorenew_rounded, size: 18),
                   label: const Text('Siapkan Rotasi TLS'),
                 ),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const BackupManagementScreen()),
+                  );
+                },
+                icon: const Icon(Icons.backup_rounded, size: 18),
+                label: const Text('Backup .ktbak'),
+              ),
             ],
           ),
           const SizedBox(height: 8),
@@ -374,6 +412,320 @@ class _MultiDeviceServerScreenState extends State<MultiDeviceServerScreen> {
             'Catatan: Foreground service Android (`specialUse`) menjaga server tetap prioritas tinggi, namun OS/OEM masih dapat menghentikan proses pada kondisi ekstrem. Transaksi Staff selalu dilindungi idempotency.',
             style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _networkStateChip(AdminNetworkState state) {
+    final Color bg;
+    final Color fg;
+    switch (state) {
+      case AdminNetworkState.routerOnline:
+        bg = AppTheme.success.withValues(alpha: 0.14);
+        fg = AppTheme.success;
+      case AdminNetworkState.hotspotBackup:
+        bg = Colors.orange.withValues(alpha: 0.14);
+        fg = Colors.orange.shade800;
+      case AdminNetworkState.offline:
+        bg = AppTheme.accentRed.withValues(alpha: 0.12);
+        fg = AppTheme.accentRed;
+      case AdminNetworkState.serverUnavailable:
+        bg = Colors.grey.shade200;
+        fg = Colors.grey.shade700;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        state.displayLabel,
+        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: fg),
+      ),
+    );
+  }
+
+  Future<void> _showEditEndpointDialog(
+    PosServerProvider srvProv,
+    AuthProvider auth,
+    String profileType,
+    ServerNetworkEndpointModel? current,
+  ) async {
+    final isPrimary = profileType == 'primary_router';
+    final hostCtrl = TextEditingController(text: current?.host ?? '');
+    final portCtrl = TextEditingController(text: (current?.port ?? srvProv.port).toString());
+    final ssidCtrl = TextEditingController(text: current?.expectedSsid ?? '');
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+        title: Text(isPrimary ? 'Profil Jaringan Router Utama' : 'Profil Hotspot HP Admin Cadangan'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 440),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: hostCtrl,
+                  decoration: InputDecoration(
+                    labelText: isPrimary ? 'IP Lokal HP Admin di Router' : 'IP Hotspot HP Admin (cth. 192.168.43.1)',
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: portCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Port HTTPS Server',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: ssidCtrl,
+                  decoration: InputDecoration(
+                    labelText: isPrimary ? 'Nama Wi-Fi Router (SSID Opsional)' : 'Nama Hotspot HP Admin (Opsional)',
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Simpan Profil')),
+        ],
+      ),
+    );
+
+    if (saved != true || !mounted) return;
+    await srvProv.saveNetworkEndpoint(
+      profileType: profileType,
+      label: isPrimary ? 'Router Toko Utama' : 'Hotspot HP Admin (Cadangan)',
+      host: hostCtrl.text.trim(),
+      port: int.tryParse(portCtrl.text.trim()) ?? 8443,
+      expectedSsid: ssidCtrl.text.trim(),
+      priority: isPrimary ? 1 : 2,
+      actorName: auth.currentUser?.name ?? 'Admin',
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Profil jaringan failover diperbarui.')),
+    );
+  }
+
+  Widget _buildNetworkFailoverCard(PosServerProvider srvProv, AuthProvider auth) {
+    final primary = srvProv.primaryRouterEndpoint;
+    final backup = srvProv.backupHotspotEndpoint;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: AppTheme.cardDecoration(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.router_rounded, color: AppTheme.primaryGreen, size: 20),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Failover Jaringan: Router Utama <-> Hotspot Cadangan',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5),
+                    ),
+                  ),
+                ],
+              ),
+              _networkStateChip(srvProv.networkState),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.amber.shade50,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.amber.shade200),
+            ),
+            child: const Text(
+              'Keterbatasan Android: Sebagian perangkat Android tidak mengizinkan Wi-Fi Client dan Hotspot aktif bersamaan secara stabil. Gunakan Router Toko sebagai jaringan utama; jika Router mati, aktifkan Hotspot HP Admin cadangan dan pindahkan Wi-Fi HP Staff ke Hotspot tersebut. POS Staff mendeteksi IP baru otomatis via UDP & TLS pinning tanpa pairing ulang.',
+              style: TextStyle(fontSize: 11.5, color: Colors.black87),
+            ),
+          ),
+          const SizedBox(height: 10),
+          _buildEndpointTile(
+            title: '1. Router Utama (${primary?.expectedSsid.isNotEmpty == true ? primary!.expectedSsid : "Wi-Fi Toko"})',
+            subtitle: primary != null && primary.effectiveUrl.isNotEmpty
+                ? primary.effectiveUrl
+                : 'Belum diatur (gunakan IP Router statis / DHCP reservation)',
+            isPrimary: true,
+            onEdit: () => _showEditEndpointDialog(srvProv, auth, 'primary_router', primary),
+          ),
+          const SizedBox(height: 8),
+          _buildEndpointTile(
+            title: '2. Hotspot Cadangan (${backup?.expectedSsid.isNotEmpty == true ? backup!.expectedSsid : "Hotspot HP Admin"})',
+            subtitle: backup != null && backup.effectiveUrl.isNotEmpty
+                ? backup.effectiveUrl
+                : 'Belum diatur (umumnya https://192.168.43.1:8443)',
+            isPrimary: false,
+            onEdit: () => _showEditEndpointDialog(srvProv, auth, 'backup_hotspot', backup),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEndpointTile({
+    required String title,
+    required String subtitle,
+    required bool isPrimary,
+    required VoidCallback onEdit,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            isPrimary ? Icons.wifi_rounded : Icons.wifi_tethering_rounded,
+            size: 18,
+            color: isPrimary ? AppTheme.primaryGreen : Colors.orange.shade700,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5)),
+                const SizedBox(height: 2),
+                Text(subtitle, style: const TextStyle(fontSize: 11.5, color: AppTheme.textMuted)),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: onEdit,
+            child: const Text('Atur IP'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActiveSessionsSection(PosServerProvider srvProv, AuthProvider auth) {
+    final sessions = srvProv.activeSessions;
+    final actor = auth.currentUser?.name ?? 'Admin';
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: AppTheme.cardDecoration(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Sesi Akun Aktif di HP Staff (${sessions.length})',
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Kebijakan batas sesi atomik: login melebihi batas akan ditolak tanpa otomatis mengeluarkan HP yang sedang aktif.',
+            style: TextStyle(fontSize: 11.5, color: AppTheme.textMuted),
+          ),
+          const SizedBox(height: 10),
+          if (sessions.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 10),
+              child: Text('Tidak ada sesi kasir aktif saat ini.', style: TextStyle(color: AppTheme.textMuted)),
+            )
+          else
+            ...sessions.map((detail) {
+              final s = detail.session;
+              final sessionId = s.id;
+              return Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.grey.shade200),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.smartphone_rounded, size: 18, color: AppTheme.primaryGreen),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${detail.cashierName} (${AppRoles.displayName(detail.cashierRole)})',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Terminal: ${detail.terminalName} • Perangkat: ${s.deviceName.isNotEmpty ? s.deviceName : detail.deviceModel}',
+                      style: const TextStyle(fontSize: 11.5, color: AppTheme.textMuted),
+                    ),
+                    Text(
+                      'Aktif sejak: ${s.issuedAt.length >= 19 ? s.issuedAt.substring(0, 19).replaceFirst("T", " ") : s.issuedAt}'
+                      '${s.lastSeenAt.isNotEmpty ? " • Terakhir: ${s.lastSeenAt.length >= 19 ? s.lastSeenAt.substring(11, 19) : s.lastSeenAt}" : ""}',
+                      style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: [
+                        if (sessionId != null)
+                          OutlinedButton.icon(
+                            onPressed: () async {
+                              await srvProv.revokeSession(sessionId, actorName: actor);
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Sesi ${detail.cashierName} pada ${detail.terminalName} dicabut.')),
+                              );
+                            },
+                            icon: const Icon(Icons.logout_rounded, size: 16, color: AppTheme.accentRed),
+                            label: const Text('Cabut Sesi', style: TextStyle(fontSize: 12, color: AppTheme.accentRed)),
+                          ),
+                        TextButton.icon(
+                          onPressed: () async {
+                            final count = await srvProv.revokeAllCashierSessions(
+                              s.cashierId,
+                              actorName: actor,
+                            );
+                            if (!mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('$count sesi milik ${detail.cashierName} dicabut.')),
+                            );
+                          },
+                          icon: const Icon(Icons.phonelink_erase_rounded, size: 16, color: AppTheme.accentRed),
+                          label: const Text('Cabut Semua Akun', style: TextStyle(fontSize: 12, color: AppTheme.accentRed)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }),
         ],
       ),
     );
