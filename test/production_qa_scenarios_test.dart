@@ -813,7 +813,10 @@ void main() {
     });
 
     test('Scenario 15: Attendance blocks double masuk, pulang without masuk, double pulang, clock rollback, replay token, + Admin correction', () async {
-      final now = DateTime.now();
+      final sysNow = DateTime.now();
+      // Anchor to 10:00 on the next calendar day so +5..+20 min offsets never cross
+      // midnight (e.g., on UTC runners around 23:50) while staying ahead of seed timestamps.
+      final now = DateTime(sysNow.year, sysNow.month, sysNow.day + 1, 10, 0, 0);
       final attProv = AttendanceProvider();
 
       // Pulang before masuk blocked
